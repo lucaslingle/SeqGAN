@@ -17,7 +17,7 @@ class TARGET_LSTM(object):
         tf.set_random_seed(66)
 
         with tf.variable_scope('generator'):
-            self.g_embeddings = tf.Variable(self.params[0])
+            self.g_embeddings = tf.get_variable(name='oracle_g_embeddings', dtype=tf.float32, shape=[self.num_emb, self.emb_dim])
             self.g_params.append(self.g_embeddings)
             self.g_recurrent_unit = self.create_recurrent_unit(self.g_params)  # maps h_tm1 to h_t for generator
             self.g_output_unit = self.create_output_unit(self.g_params)  # maps h_t to o_t (output token logits)
@@ -110,26 +110,26 @@ class TARGET_LSTM(object):
 
     def create_recurrent_unit(self, params):
         # Weights and Bias for input and hidden tensor
-        self.Wi = tf.Variable(self.params[1])
-        self.Ui = tf.Variable(self.params[2])
-        self.bi = tf.Variable(self.params[3])
+        self.Wi = tf.get_variable(name='oracle_Wi', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
+        self.Ui = tf.get_variable(name='oracle_Ui', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
+        self.bi = tf.get_variable(name='oracle_bi', dtype=tf.float32, shape=[self.hidden_dim])
 
-        self.Wf = tf.Variable(self.params[4])
-        self.Uf = tf.Variable(self.params[5])
-        self.bf = tf.Variable(self.params[6])
+        self.Wf = tf.get_variable(name='oracle_Wf', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
+        self.Uf = tf.get_variable(name='oracle_Uf', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
+        self.bf = tf.get_variable(name='oracle_bf', dtype=tf.float32, shape=[self.hidden_dim]) + tf.constant(1.0)
 
-        self.Wog = tf.Variable(self.params[7])
-        self.Uog = tf.Variable(self.params[8])
-        self.bog = tf.Variable(self.params[9])
+        self.Wo = tf.get_variable(name='oracle_Wo', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
+        self.Uo = tf.get_variable(name='oracle_Uo', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
+        self.bo = tf.get_variable(name='oracle_bo', dtype=tf.float32, shape=[self.hidden_dim])
 
-        self.Wc = tf.Variable(self.params[10])
-        self.Uc = tf.Variable(self.params[11])
-        self.bc = tf.Variable(self.params[12])
+        self.Wj = tf.get_variable(name='oracle_Wj', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
+        self.Uj = tf.get_variable(name='oracle_Uj', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
+        self.bj = tf.get_variable(name='oracle_bj', dtype=tf.float32, shape=[self.hidden_dim])
         params.extend([
             self.Wi, self.Ui, self.bi,
             self.Wf, self.Uf, self.bf,
-            self.Wog, self.Uog, self.bog,
-            self.Wc, self.Uc, self.bc])
+            self.Wo, self.Uo, self.bo,
+            self.Wj, self.Uj, self.bj])
 
         def unit(x, hidden_memory_tm1):
             previous_hidden_state, c_prev = tf.unstack(hidden_memory_tm1)
@@ -148,18 +148,18 @@ class TARGET_LSTM(object):
 
             # Output Gate
             o = tf.sigmoid(
-                tf.matmul(x, self.Wog) +
-                tf.matmul(previous_hidden_state, self.Uog) + self.bog
+                tf.matmul(x, self.Wo) +
+                tf.matmul(previous_hidden_state, self.Uo) + self.bo
             )
 
-            # New Memory Cell
-            c_ = tf.nn.tanh(
-                tf.matmul(x, self.Wc) +
-                tf.matmul(previous_hidden_state, self.Uc) + self.bc
+            # Update 
+            j = tf.nn.tanh(
+                tf.matmul(x, self.Wj) +
+                tf.matmul(previous_hidden_state, self.Uj) + self.bj
             )
 
             # Final Memory cell
-            c = f * c_prev + i * c_
+            c = f * c_prev + i * j
 
             # Current Hidden state
             current_hidden_state = o * tf.nn.tanh(c)
@@ -169,14 +169,14 @@ class TARGET_LSTM(object):
         return unit
 
     def create_output_unit(self, params):
-        self.Wo = tf.Variable(self.params[13])
-        self.bo = tf.Variable(self.params[14])
-        params.extend([self.Wo, self.bo])
+        self.W_for_logits = tf.get_variable(name='oracle_W_for_logits', dtype=tf.float32, shape=[self.hidden_dim, self.num_emb]) # (num_emb is like vocab size; it isnt the embedding dim)
+        self.b_for_logits = tf.get_variable(name='oracle_b_for_logits', dtype=tf.float32, shape=[self.num_emb])
+        params.extend([self.W_for_logits, self.b_for_logits])
 
         def unit(hidden_memory_tuple):
             hidden_state, c_prev = tf.unstack(hidden_memory_tuple)
             # hidden_state : batch x hidden_dim
-            logits = tf.matmul(hidden_state, self.Wo) + self.bo
+            logits = tf.matmul(hidden_state, self.W_for_logits) + self.b_for_logits
             # output = tf.nn.softmax(logits)
             return logits
 
