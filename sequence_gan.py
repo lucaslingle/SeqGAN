@@ -44,7 +44,7 @@ def generate_samples(sess, trainable_model, batch_size, generated_num, output_fi
     for _ in range(int(generated_num / batch_size)):
         generated_samples.extend(trainable_model.generate(sess))
 
-    with open(output_file, 'w') as fout:
+    with open(output_file, 'w+') as fout:
         for poem in generated_samples:
             buffer = ' '.join([str(x) for x in poem]) + '\n'
             fout.write(buffer)
@@ -103,7 +103,7 @@ def main():
     generate_samples(sess, target_lstm, BATCH_SIZE, generated_num, positive_file)
     gen_data_loader.create_batches(positive_file)
 
-    log = open('save/experiment-log.txt', 'w')
+    log = open('save/experiment-log.txt', 'w+')
     #  pre-train generator
     print('Starting pre-training for the generator')
     log.write('pre-training...\n')
