@@ -110,21 +110,21 @@ class TARGET_LSTM(object):
 
     def create_recurrent_unit(self, params):
         # Weights and Bias for input and hidden tensor
-        self.Wi = tf.get_variable(name='oracle_Wi', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
-        self.Ui = tf.get_variable(name='oracle_Ui', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
-        self.bi = tf.get_variable(name='oracle_bi', dtype=tf.float32, shape=[self.hidden_dim])
+        self.Wi = tf.Variable(self.init_matrix([self.emb_dim, self.hidden_dim]))
+        self.Ui = tf.Variable(self.init_matrix([self.hidden_dim, self.hidden_dim]))
+        self.bi = tf.Variable(self.init_matrix([self.hidden_dim]))
 
-        self.Wf = tf.get_variable(name='oracle_Wf', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
-        self.Uf = tf.get_variable(name='oracle_Uf', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
-        self.bf = tf.get_variable(name='oracle_bf', dtype=tf.float32, shape=[self.hidden_dim])
+        self.Wf = tf.Variable(self.init_matrix([self.emb_dim, self.hidden_dim]))
+        self.Uf = tf.Variable(self.init_matrix([self.hidden_dim, self.hidden_dim]))
+        self.bf = tf.Variable(self.init_matrix([self.hidden_dim]))
 
-        self.Wo = tf.get_variable(name='oracle_Wo', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
-        self.Uo = tf.get_variable(name='oracle_Uo', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
-        self.bo = tf.get_variable(name='oracle_bo', dtype=tf.float32, shape=[self.hidden_dim])
+        self.Wo = tf.Variable(self.init_matrix([self.emb_dim, self.hidden_dim]))
+        self.Uo = tf.Variable(self.init_matrix([self.hidden_dim, self.hidden_dim]))
+        self.bo = tf.Variable(self.init_matrix([self.hidden_dim]))
 
-        self.Wj = tf.get_variable(name='oracle_Wj', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
-        self.Uj = tf.get_variable(name='oracle_Uj', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
-        self.bj = tf.get_variable(name='oracle_bj', dtype=tf.float32, shape=[self.hidden_dim])
+        self.Wj = tf.Variable(self.init_matrix([self.emb_dim, self.hidden_dim]))
+        self.Uj = tf.Variable(self.init_matrix([self.hidden_dim, self.hidden_dim]))
+        self.bj = tf.Variable(self.init_matrix([self.hidden_dim]))
         params.extend([
             self.Wi, self.Ui, self.bi,
             self.Wf, self.Uf, self.bf,
@@ -143,7 +143,7 @@ class TARGET_LSTM(object):
             # Forget Gate
             f = tf.sigmoid(
                 tf.matmul(x, self.Wf) +
-                tf.matmul(previous_hidden_state, self.Uf) + self.bf + 1.0
+                tf.matmul(previous_hidden_state, self.Uf) + self.bf
             )
 
             # Output Gate
