@@ -139,7 +139,7 @@ class Generator(object):
 
         self.Wf = tf.Variable(self.init_matrix([self.emb_dim, self.hidden_dim]))
         self.Uf = tf.Variable(self.init_matrix([self.hidden_dim, self.hidden_dim]))
-        self.bf = tf.Variable(self.init_matrix([self.hidden_dim])) + tf.constant(1.0)
+        self.bf = tf.Variable(self.init_matrix([self.hidden_dim]))
 
         self.Wog = tf.Variable(self.init_matrix([self.emb_dim, self.hidden_dim]))
         self.Uog = tf.Variable(self.init_matrix([self.hidden_dim, self.hidden_dim]))
@@ -166,7 +166,7 @@ class Generator(object):
             # Forget Gate
             f = tf.sigmoid(
                 tf.matmul(x, self.Wf) +
-                tf.matmul(previous_hidden_state, self.Uf) + self.bf
+                tf.matmul(previous_hidden_state, self.Uf) + self.bf + 1.0
             )
 
             # Output Gate
