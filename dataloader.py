@@ -40,19 +40,21 @@ class Dis_dataloader():
         # Load data
         positive_examples = []
         negative_examples = []
-        with open(positive_file)as fin:
+        with open(positive_file, 'r') as fin:
             for line in fin:
                 line = line.strip()
                 line = line.split()
                 parse_line = [int(x) for x in line]
                 positive_examples.append(parse_line)
-        with open(negative_file)as fin:
+        fin.close()
+        with open(negative_file, 'r') as fin:
             for line in fin:
                 line = line.strip()
                 line = line.split()
                 parse_line = [int(x) for x in line]
                 if len(parse_line) == 20:
                     negative_examples.append(parse_line)
+        fin.close()
         self.sentences = np.array(positive_examples + negative_examples)
 
         # Generate labels
