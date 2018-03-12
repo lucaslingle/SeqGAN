@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import tensorflow as tf
 import random
@@ -37,6 +38,7 @@ negative_file = 'save/generator_sample.txt'
 eval_file = 'save/eval_file.txt'
 generated_num = 10000
 
+os.makedirs('save', exist_ok=True)
 
 def generate_samples(sess, trainable_model, batch_size, generated_num, output_file):
     # Generate Samples
@@ -113,7 +115,7 @@ def main():
             generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file)
             likelihood_data_loader.create_batches(eval_file)
             test_loss = target_loss(sess, target_lstm, likelihood_data_loader)
-            print('pre-train epoch {}... test_loss {}'.format(epoch, test_loss))
+            print('pre-train epoch {}... oracle_nll {}'.format(epoch, test_loss))
             buffer = 'epoch:\t'+ str(epoch) + '\tnll:\t' + str(test_loss) + '\n'
             log.write(buffer)
 
