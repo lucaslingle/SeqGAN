@@ -38,7 +38,7 @@ negative_file = 'save/generator_sample.txt'
 eval_file = 'save/eval_file.txt'
 generated_num = 10000
 
-os.makedirs('save', exist_ok=True)
+os.makedirs('save')
 
 def generate_samples(sess, trainable_model, batch_size, generated_num, output_file):
     # Generate Samples
