@@ -166,7 +166,7 @@ class Generator(object):
             # Forget Gate
             f = tf.sigmoid(
                 tf.matmul(x, self.Wf) +
-                tf.matmul(previous_hidden_state, self.Uf) + self.bf + 1.0
+                tf.matmul(previous_hidden_state, self.Uf) + self.bf
             )
 
             # Output Gate
