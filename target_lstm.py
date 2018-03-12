@@ -17,7 +17,7 @@ class TARGET_LSTM(object):
         tf.set_random_seed(66)
 
         with tf.variable_scope('generator'):
-            self.g_embeddings = tf.get_variable(name='oracle_g_embeddings', dtype=tf.float32, shape=[self.num_emb, self.emb_dim])
+            self.g_embeddings = tf.Variable(self.init_matrix([self.num_emb, self.emb_dim]))
             self.g_params.append(self.g_embeddings)
             self.g_recurrent_unit = self.create_recurrent_unit(self.g_params)  # maps h_tm1 to h_t for generator
             self.g_output_unit = self.create_output_unit(self.g_params)  # maps h_t to o_t (output token logits)
@@ -169,8 +169,8 @@ class TARGET_LSTM(object):
         return unit
 
     def create_output_unit(self, params):
-        self.W_for_logits = tf.get_variable(name='oracle_W_for_logits', dtype=tf.float32, shape=[self.hidden_dim, self.num_emb]) # (num_emb is like vocab size; it isnt the embedding dim)
-        self.b_for_logits = tf.get_variable(name='oracle_b_for_logits', dtype=tf.float32, shape=[self.num_emb])
+        self.W_for_logits = tf.Variable(self.init_matrix([self.hidden_dim, self.num_emb])) # (num_emb is like vocab size; it isnt the embedding dim)
+        self.b_for_logits = tf.Variable(self.init_matrix([self.num_emb]))
         params.extend([self.W_for_logits, self.b_for_logits])
 
         def unit(hidden_memory_tuple):
