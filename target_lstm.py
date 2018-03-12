@@ -116,7 +116,7 @@ class TARGET_LSTM(object):
 
         self.Wf = tf.get_variable(name='oracle_Wf', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
         self.Uf = tf.get_variable(name='oracle_Uf', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
-        self.bf = tf.get_variable(name='oracle_bf', dtype=tf.float32, shape=[self.hidden_dim]) + tf.constant(1.0)
+        self.bf = tf.get_variable(name='oracle_bf', dtype=tf.float32, shape=[self.hidden_dim])
 
         self.Wo = tf.get_variable(name='oracle_Wo', dtype=tf.float32, shape=[self.emb_dim, self.hidden_dim])
         self.Uo = tf.get_variable(name='oracle_Uo', dtype=tf.float32, shape=[self.hidden_dim, self.hidden_dim])
@@ -143,7 +143,7 @@ class TARGET_LSTM(object):
             # Forget Gate
             f = tf.sigmoid(
                 tf.matmul(x, self.Wf) +
-                tf.matmul(previous_hidden_state, self.Uf) + self.bf
+                tf.matmul(previous_hidden_state, self.Uf) + self.bf + 1.0
             )
 
             # Output Gate
