@@ -178,10 +178,9 @@ def pre_train_epoch(sess, trainable_model, data_loader):
 
 def main():
     assert START_TOKEN == 0
-    assert FLAGS.pretraining_style in ['full', 'mid', 'turbo', 'light', 'none']
     assert ((FLAGS.use_oracle_data or FLAGS.use_natural_data) == True)
-    assert ((FLAGS.use_character_level_model == True)
-            if (FLAGS.use_onehot_embeddings == True)
+
+    assert ((FLAGS.use_character_level_model == True) if (FLAGS.use_onehot_embeddings == True)
             else (FLAGS.use_character_level_model == False))
 
     if FLAGS.use_natural_data:
@@ -223,17 +222,17 @@ def main():
     gen_data_loader = Gen_Data_loader(BATCH_SIZE,
                                       vocab_dictionary=vocab_dict,
                                       max_seq_length=SEQ_LENGTH,
-                                      character_level_model_bool=FLAGS.character_level_model_bool)
+                                      character_level_model_bool=FLAGS.use_character_level_model)
 
     likelihood_data_loader = Gen_Data_loader(BATCH_SIZE,
                                              vocab_dictionary=vocab_dict,
                                              max_seq_length=SEQ_LENGTH,
-                                             character_level_model_bool=FLAGS.character_level_model_bool)
+                                             character_level_model_bool=FLAGS.use_character_level_model)
 
     dis_data_loader = Dis_dataloader(BATCH_SIZE,
                                      vocab_dictionary=vocab_dict,
                                      max_seq_length=SEQ_LENGTH,
-                                     character_level_model_bool=FLAGS.character_level_model_bool)
+                                     character_level_model_bool=FLAGS.use_character_level_model)
 
     generator = Generator(vocab_size, BATCH_SIZE, EMB_DIM, HIDDEN_DIM, SEQ_LENGTH,
                           go_token=START_TOKEN,

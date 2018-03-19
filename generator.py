@@ -106,7 +106,7 @@ class Generator(object):
             cond=lambda i, _1, _2, _3: i < self.sequence_length,
             body=_pretrain_recurrence,
             loop_vars=(tf.constant(0, dtype=tf.int32),
-                       tf.nn.embedding_lookup(self.g_embeddings, self.start_token),
+                       tf.nn.embedding_lookup(self.g_embeddings, self.go_token_batch),
                        self.h0, g_predictions))
 
         self.g_predictions = tf.transpose(self.g_predictions.stack(), perm=[1, 0, 2])  # batch_size x seq_length x vocab_size
