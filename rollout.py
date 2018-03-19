@@ -13,7 +13,7 @@ class ROLLOUT(object):
         self.emb_dim = self.lstm.emb_dim
         self.hidden_dim = self.lstm.hidden_dim
         self.sequence_length = self.lstm.sequence_length
-        self.start_token = tf.identity(self.lstm.start_token)
+        self.go_token_batch = tf.identity(self.lstm.go_token_batch)
         self.learning_rate = self.lstm.learning_rate
 
         self.g_embeddings = tf.identity(self.lstm.g_embeddings)
@@ -64,7 +64,7 @@ class ROLLOUT(object):
             cond=lambda i, _1, _2, given_num, _4: i < given_num,
             body=_g_recurrence_1,
             loop_vars=(tf.constant(0, dtype=tf.int32),
-                       tf.nn.embedding_lookup(self.g_embeddings, self.start_token), self.h0, self.given_num, gen_x))
+                       tf.nn.embedding_lookup(self.g_embeddings, self.go_token_batch), self.h0, self.given_num, gen_x))
 
         _, _, _, _, self.gen_x = control_flow_ops.while_loop(
             cond=lambda i, _1, _2, _3, _4: i < self.sequence_length,
@@ -95,7 +95,7 @@ class ROLLOUT(object):
             if i == 0:
                 rewards.append(ypred)
             else:
-                rewards[self.sequence_length] += ypred
+                rewards[self.sequence_length - 1] += ypred
 
         rewards = np.transpose(np.array(rewards)) / (1.0 * rollout_num)  # batch_size x seq_length
         return rewards

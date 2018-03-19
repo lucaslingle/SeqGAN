@@ -12,6 +12,7 @@ from target_lstm import TARGET_LSTM
 flags = tf.app.flags
 
 # Logging and printout options
+flags.DEFINE_boolean("debug", False, "debug: 1 pretrain epoch for g and d")
 flags.DEFINE_boolean("show_every_epoch", False, "show_every_epoch: print every epoch's stats")
 
 # Model Architecture
@@ -19,7 +20,7 @@ flags.DEFINE_boolean("show_every_epoch", False, "show_every_epoch: print every e
 flags.DEFINE_integer("g_emb_dim", 32, "g_emb_dim: embedding size for generator")
 flags.DEFINE_integer("g_hidden_dim", 32, "g_hidden_dim: hidden state size for generator lstm")
 ### Discriminator
-flags.DEFINE_integer("d_emb_dim", 32, "d_emb_dim: embedding size for discriminator")
+flags.DEFINE_integer("d_emb_dim", 64, "d_emb_dim: embedding size for discriminator")
 
 ### Both
 flags.DEFINE_integer("batch_size", 64, "batch_size: batch size")
@@ -55,7 +56,7 @@ SEQ_LENGTH = FLAGS.max_sequence_len # sequence length
 #########################################################################################
 #  Generator Hyper-parameters
 ######################################################################################
-PRE_EPOCH_NUM = 120
+PRE_EPOCH_NUM = 120 if not FLAGS.debug else 1
 WORD_EMB_DIM = FLAGS.g_emb_dim # embedding dimension
 HIDDEN_DIM = FLAGS.g_hidden_dim # hidden state dimension of lstm cell
 
@@ -69,7 +70,7 @@ oracle_vocab_size = 5000  # if applicable
 #########################################################################################
 #  Discriminator Hyper-parameters
 #########################################################################################
-dis_pre_epoch_num = 50
+dis_pre_epoch_num = 50 if not FLAGS.debug else 1
 dis_word_embedding_dim = FLAGS.d_emb_dim
 dis_filter_sizes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20]
 dis_num_filters = [100, 200, 200, 200, 200, 100, 100, 100, 100, 100, 160, 160]
@@ -245,7 +246,7 @@ def main():
     target_params = []
     target_lstm = TARGET_LSTM(vocab_size, BATCH_SIZE, EMB_DIM, HIDDEN_DIM, SEQ_LENGTH, START_TOKEN, target_params) # The oracle model
 
-    discriminator = Discriminator(sequence_length=20,
+    discriminator = Discriminator(sequence_length=SEQ_LENGTH,
                                   num_classes=2,
                                   vocab_size=vocab_size,
                                   embedding_size=dis_embedding_dim,
@@ -312,7 +313,7 @@ def main():
     # Generate some data from the generator, train 3 epochs on the oracle data and generator data
     # Do this 50 times
     for epoch in range(dis_pre_epoch_num):
-        generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
+        generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
             vocab_dict=vocab_dict, char_level_bool=FLAGS.use_character_level_model
         )
         dis_data_loader.load_train_data(positive_file, negative_file)
@@ -383,7 +384,9 @@ def main():
 
         # Train the discriminator
         for _ in range(FLAGS.d_steps):
-            generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file)
+            generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
+                             vocab_dict=vocab_dict, char_level_bool=FLAGS.use_character_level_model
+            )
             dis_data_loader.load_train_data(positive_file, negative_file)
 
             for _ in range(FLAGS.k_steps):
@@ -401,7 +404,7 @@ def main():
 
         # Test
         if (total_batch % 5 == 0) or (total_batch == TOTAL_BATCH - 1) or FLAGS.show_every_epoch:
-            buffer = 'epoch: {}\t discriminator training... d_loss_real: {}\t datetime: {}'.format(
+            buffer = 'epoch: {}\t discriminator training... discriminator_cross_entropy_loss: {}\t datetime: {}'.format(
                 total_batch, advtrain_discriminator_cross_entropy_loss, datetime.datetime.now()
             )
             print(buffer)
