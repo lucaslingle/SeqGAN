@@ -4,14 +4,22 @@ from tensorflow.python.ops import tensor_array_ops, control_flow_ops
 
 class Generator(object):
     def __init__(self, num_emb, batch_size, emb_dim, hidden_dim,
-                 sequence_length, start_token,
+                 sequence_length, go_token, eos_token=None, pad_token=None, use_onehot_embeddings=False,
                  learning_rate=0.01, reward_gamma=0.95):
         self.num_emb = num_emb
         self.batch_size = batch_size
         self.emb_dim = emb_dim
         self.hidden_dim = hidden_dim
         self.sequence_length = sequence_length
-        self.start_token = tf.constant([start_token] * self.batch_size, dtype=tf.int32)
+
+        self.go_token_batch = tf.constant([go_token] * self.batch_size, dtype=tf.int32)
+        self.eos_token_batch = tf.constant([eos_token] * self.batch_size, dtype=tf.int32) \
+            if eos_token is not None \
+            else self.go_token_batch
+
+        self.pad_token_id = pad_token
+        self.use_onehot_embeddings = use_onehot_embeddings
+
         self.learning_rate = tf.Variable(float(learning_rate), trainable=False)
         self.reward_gamma = reward_gamma
         self.g_params = []
@@ -22,8 +30,22 @@ class Generator(object):
         self.expected_reward = tf.Variable(tf.zeros([self.sequence_length]))
 
         with tf.variable_scope('generator'):
-            self.g_embeddings = tf.Variable(self.init_matrix([self.num_emb, self.emb_dim]))
-            self.g_params.append(self.g_embeddings)
+
+            self.g_embeddings_naive = tf.eye(self.num_emb)
+
+            if self.use_onehot_embeddings == False:
+                self.g_embeddings_naive = tf.Variable(self.init_matrix([self.num_emb, self.emb_dim]))
+                self.g_params.append(self.g_embeddings_naive)
+
+            self.g_embeddings = self.g_embeddings_naive
+            if pad_token is not None:
+                self.g_embeddings = tf.concat([
+                        self.g_embeddings_naive[0:self.pad_token_id, :],
+                        tf.zeros(dtype=tf.float32, shape=[1, self.emb_dim]),
+                        self.g_embeddings_naive[(self.pad_token_id+1):, :]
+                    ],
+                    axis=0
+                )
             self.g_recurrent_unit = self.create_recurrent_unit(self.g_params)  # maps h_tm1 to h_t for generator
             self.g_output_unit = self.create_output_unit(self.g_params)  # maps h_t to o_t (output token logits)
 
@@ -59,7 +81,7 @@ class Generator(object):
             cond=lambda i, _1, _2, _3, _4: i < self.sequence_length,
             body=_g_recurrence,
             loop_vars=(tf.constant(0, dtype=tf.int32),
-                       tf.nn.embedding_lookup(self.g_embeddings, self.start_token), self.h0, gen_o, gen_x))
+                       tf.nn.embedding_lookup(self.g_embeddings, self.go_token_batch), self.h0, gen_o, gen_x))
 
         self.gen_x = self.gen_x.stack()  # seq_length x batch_size
         self.gen_x = tf.transpose(self.gen_x, perm=[1, 0])  # batch_size x seq_length
@@ -166,7 +188,7 @@ class Generator(object):
             # Forget Gate
             f = tf.sigmoid(
                 tf.matmul(x, self.Wf) +
-                tf.matmul(previous_hidden_state, self.Uf) + self.bf
+                tf.matmul(previous_hidden_state, self.Uf) + self.bf + 1.0
             )
 
             # Output Gate
