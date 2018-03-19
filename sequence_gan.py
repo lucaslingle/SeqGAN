@@ -215,9 +215,9 @@ def main():
         if FLAGS.use_character_level_model and FLAGS.use_onehot_embeddings:
             # for char level models, we use one-hot encodings,
             # so the embedding dim must be the same as the number of possible tokens
-            EMB_DIM = vocab_size
-            dis_embedding_dim = vocab_size
 
+            EMB_DIM = vocab_size
+            ####dis_embedding_dim = vocab_size
 
     gen_data_loader = Gen_Data_loader(BATCH_SIZE,
                                       vocab_dictionary=vocab_dict,
@@ -266,7 +266,14 @@ def main():
     sess.run(tf.global_variables_initializer())
 
     # First, use the oracle model to provide the positive examples, which are sampled from the oracle data distribution
-    generate_samples(sess, target_lstm, BATCH_SIZE, generated_num, positive_file)
+    if FLAGS.use_oracle_data:
+        generate_samples(sess, target_lstm, BATCH_SIZE, generated_num, positive_file,
+                         vocab_dict=vocab_dict,
+                         char_level_bool=FLAGS.use_character_level_model
+        )
+        # note: when using oracle data, prior code has overridden the flag for use_character_level_model,
+        # and forced it to be False.
+
     gen_data_loader.create_batches(positive_file)
 
     log = open('save/experiment-log.txt', 'w+')
