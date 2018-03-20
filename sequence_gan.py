@@ -12,7 +12,8 @@ from target_lstm import TARGET_LSTM
 flags = tf.app.flags
 
 # Logging and printout options
-flags.DEFINE_boolean("debug", False, "debug: 1 pretrain epoch for g and d")
+flags.DEFINE_boolean("pretrain_g_epochs", 120, "number of epochs for pretrain the generator for, using MLE objective")
+flags.DEFINE_boolean("pretrain_d_epochs", 50, "number of epochs for pretrain the discriminator for")
 flags.DEFINE_boolean("show_every_epoch", False, "show_every_epoch: print every epoch's stats")
 
 # Model Architecture
@@ -56,7 +57,7 @@ SEQ_LENGTH = FLAGS.max_sequence_len # sequence length
 #########################################################################################
 #  Generator Hyper-parameters
 ######################################################################################
-PRE_EPOCH_NUM = 120 if not FLAGS.debug else 1
+PRE_EPOCH_NUM = FLAGS.pretrain_g_epochs
 WORD_EMB_DIM = FLAGS.g_emb_dim # embedding dimension
 HIDDEN_DIM = FLAGS.g_hidden_dim # hidden state dimension of lstm cell
 
@@ -70,7 +71,7 @@ oracle_vocab_size = 5000  # if applicable
 #########################################################################################
 #  Discriminator Hyper-parameters
 #########################################################################################
-dis_pre_epoch_num = 50 if not FLAGS.debug else 1
+dis_pre_epoch_num = FLAGS.pretrain_d_epochs
 dis_word_embedding_dim = FLAGS.d_emb_dim
 dis_filter_sizes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20]
 dis_num_filters = [100, 200, 200, 200, 200, 100, 100, 100, 100, 100, 160, 160]
