@@ -12,8 +12,8 @@ from target_lstm import TARGET_LSTM
 flags = tf.app.flags
 
 # Logging and printout options
-flags.DEFINE_boolean("pretrain_g_epochs", 120, "number of epochs for pretrain the generator for, using MLE objective")
-flags.DEFINE_boolean("pretrain_d_epochs", 50, "number of epochs for pretrain the discriminator for")
+flags.DEFINE_integer("pretrain_g_epochs", 120, "number of epochs for pretrain the generator for, using MLE objective")
+flags.DEFINE_integer("pretrain_d_epochs", 50, "number of epochs for pretrain the discriminator for")
 flags.DEFINE_boolean("show_every_epoch", False, "show_every_epoch: print every epoch's stats")
 
 # Model Architecture
