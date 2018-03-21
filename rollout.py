@@ -13,7 +13,7 @@ class ROLLOUT(object):
         self.emb_dim = self.lstm.emb_dim
         self.hidden_dim = self.lstm.hidden_dim
         self.sequence_length = self.lstm.sequence_length
-        self.start_token = tf.identity(self.lstm.start_token)
+        self.go_token_batch = tf.identity(self.lstm.go_token_batch)
         self.learning_rate = self.lstm.learning_rate
 
         self.g_embeddings = tf.identity(self.lstm.g_embeddings)
@@ -64,7 +64,7 @@ class ROLLOUT(object):
             cond=lambda i, _1, _2, given_num, _4: i < given_num,
             body=_g_recurrence_1,
             loop_vars=(tf.constant(0, dtype=tf.int32),
-                       tf.nn.embedding_lookup(self.g_embeddings, self.start_token), self.h0, self.given_num, gen_x))
+                       tf.nn.embedding_lookup(self.g_embeddings, self.go_token_batch), self.h0, self.given_num, gen_x))
 
         _, _, _, _, self.gen_x = control_flow_ops.while_loop(
             cond=lambda i, _1, _2, _3, _4: i < self.sequence_length,
@@ -77,12 +77,12 @@ class ROLLOUT(object):
     def get_reward(self, sess, input_x, rollout_num, discriminator):
         rewards = []
         for i in range(rollout_num):
-            for given_num in range(1, 20):
+            for given_num in range(1, self.sequence_length):
                 feed = {self.x: input_x, self.given_num: given_num}
                 samples = sess.run(self.gen_x, feed)
                 feed = {discriminator.input_x: samples, discriminator.dropout_keep_prob: 1.0}
                 ypred_for_auc = sess.run(discriminator.ypred_for_auc, feed)
-                ypred = np.array([item[1] for item in ypred_for_auc])
+                ypred = np.array([item[item.shape[0]-1] for item in ypred_for_auc])
                 if i == 0:
                     rewards.append(ypred)
                 else:
@@ -91,11 +91,11 @@ class ROLLOUT(object):
             # the last token reward
             feed = {discriminator.input_x: input_x, discriminator.dropout_keep_prob: 1.0}
             ypred_for_auc = sess.run(discriminator.ypred_for_auc, feed)
-            ypred = np.array([item[1] for item in ypred_for_auc])
+            ypred = np.array([item[item.shape[0]-1] for item in ypred_for_auc])
             if i == 0:
                 rewards.append(ypred)
             else:
-                rewards[19] += ypred
+                rewards[self.sequence_length - 1] += ypred
 
         rewards = np.transpose(np.array(rewards)) / (1.0 * rollout_num)  # batch_size x seq_length
         return rewards
@@ -130,7 +130,7 @@ class ROLLOUT(object):
             # Forget Gate
             f = tf.sigmoid(
                 tf.matmul(x, self.Wf) +
-                tf.matmul(previous_hidden_state, self.Uf) + self.bf
+                tf.matmul(previous_hidden_state, self.Uf) + self.bf + 1.0
             )
 
             # Output Gate
@@ -185,7 +185,7 @@ class ROLLOUT(object):
             # Forget Gate
             f = tf.sigmoid(
                 tf.matmul(x, self.Wf) +
-                tf.matmul(previous_hidden_state, self.Uf) + self.bf
+                tf.matmul(previous_hidden_state, self.Uf) + self.bf + 1.0
             )
 
             # Output Gate

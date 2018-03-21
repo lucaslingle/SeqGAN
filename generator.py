@@ -2,16 +2,38 @@ import tensorflow as tf
 from tensorflow.python.ops import tensor_array_ops, control_flow_ops
 
 
+def log_sum_exp(x):
+    """ numerically stable log_sum_exp implementation that prevents overflow """
+    axis = len(x.get_shape())-1
+    m = tf.reduce_max(x, axis)
+    m2 = tf.reduce_max(x, axis, keep_dims=True)
+    return m + tf.log(tf.reduce_sum(tf.exp(x-m2), axis))
+
+def log_prob_from_logits(x):
+    """ numerically stable log_softmax implementation that prevents overflow """
+    axis = len(x.get_shape())-1
+    m = tf.reduce_max(x, axis, keep_dims=True)
+    return x - m - tf.log(tf.reduce_sum(tf.exp(x-m), axis, keep_dims=True))
+
+
 class Generator(object):
     def __init__(self, num_emb, batch_size, emb_dim, hidden_dim,
-                 sequence_length, start_token,
+                 sequence_length, go_token, eos_token=None, pad_token=None, use_onehot_embeddings=False,
                  learning_rate=0.01, reward_gamma=0.95):
         self.num_emb = num_emb
         self.batch_size = batch_size
         self.emb_dim = emb_dim
         self.hidden_dim = hidden_dim
         self.sequence_length = sequence_length
-        self.start_token = tf.constant([start_token] * self.batch_size, dtype=tf.int32)
+
+        self.go_token_batch = tf.constant([go_token] * self.batch_size, dtype=tf.int32)
+        self.eos_token_batch = tf.constant([eos_token] * self.batch_size, dtype=tf.int32) \
+            if eos_token is not None \
+            else self.go_token_batch
+
+        self.pad_token_id = pad_token
+        self.use_onehot_embeddings = use_onehot_embeddings
+
         self.learning_rate = tf.Variable(float(learning_rate), trainable=False)
         self.reward_gamma = reward_gamma
         self.g_params = []
@@ -22,8 +44,22 @@ class Generator(object):
         self.expected_reward = tf.Variable(tf.zeros([self.sequence_length]))
 
         with tf.variable_scope('generator'):
-            self.g_embeddings = tf.Variable(self.init_matrix([self.num_emb, self.emb_dim]))
-            self.g_params.append(self.g_embeddings)
+
+            self.g_embeddings_naive = tf.eye(self.num_emb)
+
+            if self.use_onehot_embeddings == False:
+                self.g_embeddings_naive = tf.Variable(self.init_matrix([self.num_emb, self.emb_dim]))
+                self.g_params.append(self.g_embeddings_naive)
+
+            self.g_embeddings = self.g_embeddings_naive
+            if pad_token is not None:
+                self.g_embeddings = tf.concat([
+                        self.g_embeddings_naive[0:self.pad_token_id, :],
+                        tf.zeros(dtype=tf.float32, shape=[1, self.emb_dim]),
+                        self.g_embeddings_naive[(self.pad_token_id+1):, :]
+                    ],
+                    axis=0
+                )
             self.g_recurrent_unit = self.create_recurrent_unit(self.g_params)  # maps h_tm1 to h_t for generator
             self.g_output_unit = self.create_output_unit(self.g_params)  # maps h_t to o_t (output token logits)
 
@@ -47,7 +83,7 @@ class Generator(object):
         def _g_recurrence(i, x_t, h_tm1, gen_o, gen_x):
             h_t = self.g_recurrent_unit(x_t, h_tm1)  # hidden_memory_tuple
             o_t = self.g_output_unit(h_t)  # batch x vocab , logits not prob
-            log_prob = tf.log(tf.nn.softmax(o_t))
+            log_prob = log_prob_from_logits(o_t)
             next_token = tf.cast(tf.reshape(tf.multinomial(log_prob, 1), [self.batch_size]), tf.int32)
             x_tp1 = tf.nn.embedding_lookup(self.g_embeddings, next_token)  # batch x emb_dim
             gen_o = gen_o.write(i, tf.reduce_sum(tf.multiply(tf.one_hot(next_token, self.num_emb, 1.0, 0.0),
@@ -59,13 +95,13 @@ class Generator(object):
             cond=lambda i, _1, _2, _3, _4: i < self.sequence_length,
             body=_g_recurrence,
             loop_vars=(tf.constant(0, dtype=tf.int32),
-                       tf.nn.embedding_lookup(self.g_embeddings, self.start_token), self.h0, gen_o, gen_x))
+                       tf.nn.embedding_lookup(self.g_embeddings, self.go_token_batch), self.h0, gen_o, gen_x))
 
         self.gen_x = self.gen_x.stack()  # seq_length x batch_size
         self.gen_x = tf.transpose(self.gen_x, perm=[1, 0])  # batch_size x seq_length
 
         # supervised pretraining for generator
-        g_predictions = tensor_array_ops.TensorArray(
+        g_logits = tensor_array_ops.TensorArray(
             dtype=tf.float32, size=self.sequence_length,
             dynamic_size=False, infer_shape=True)
 
@@ -73,28 +109,24 @@ class Generator(object):
             dtype=tf.float32, size=self.sequence_length)
         ta_emb_x = ta_emb_x.unstack(self.processed_x)
 
-        def _pretrain_recurrence(i, x_t, h_tm1, g_predictions):
+        def _pretrain_recurrence(i, x_t, h_tm1, g_logits):
             h_t = self.g_recurrent_unit(x_t, h_tm1)
             o_t = self.g_output_unit(h_t)
-            g_predictions = g_predictions.write(i, tf.nn.softmax(o_t))  # batch x vocab_size
+            g_logits = g_logits.write(i, o_t)  # batch x vocab_size
             x_tp1 = ta_emb_x.read(i)
-            return i + 1, x_tp1, h_t, g_predictions
+            return i + 1, x_tp1, h_t, g_logits
 
-        _, _, _, self.g_predictions = control_flow_ops.while_loop(
+        _, _, _, self.g_logits = control_flow_ops.while_loop(
             cond=lambda i, _1, _2, _3: i < self.sequence_length,
             body=_pretrain_recurrence,
             loop_vars=(tf.constant(0, dtype=tf.int32),
-                       tf.nn.embedding_lookup(self.g_embeddings, self.start_token),
-                       self.h0, g_predictions))
+                       tf.nn.embedding_lookup(self.g_embeddings, self.go_token_batch),
+                       self.h0, g_logits))
 
-        self.g_predictions = tf.transpose(self.g_predictions.stack(), perm=[1, 0, 2])  # batch_size x seq_length x vocab_size
+        self.g_logits = tf.transpose(self.g_logits.stack(), perm=[1, 0, 2])  # batch_size x seq_length x vocab_size
 
         # pretraining loss
-        self.pretrain_loss = -tf.reduce_sum(
-            tf.one_hot(tf.to_int32(tf.reshape(self.x, [-1])), self.num_emb, 1.0, 0.0) * tf.log(
-                tf.clip_by_value(tf.reshape(self.g_predictions, [-1, self.num_emb]), 1e-20, 1.0)
-            )
-        ) / (self.sequence_length * self.batch_size)
+        self.pretrain_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.g_logits, labels=self.x))
 
         # training updates
         pretrain_opt = self.g_optimizer(self.learning_rate)
@@ -105,12 +137,55 @@ class Generator(object):
         #######################################################################################################
         #  Unsupervised Training
         #######################################################################################################
-        self.g_loss = -tf.reduce_sum(
-            tf.reduce_sum(
-                tf.one_hot(tf.to_int32(tf.reshape(self.x, [-1])), self.num_emb, 1.0, 0.0) * tf.log(
-                    tf.clip_by_value(tf.reshape(self.g_predictions, [-1, self.num_emb]), 1e-20, 1.0)
-                ), 1) * tf.reshape(self.rewards, [-1])
+        #
+        # we ran the recurrence to get g_logits for each step in the generated samples.
+        #
+        # now we can use
+        # sparse_softmax_cross_entropy_with_logits to give us the negative log prob of each token from the generated samples
+        #
+        # i.e.,
+        #     for a given integer y_t representing some token ID generated at time t,
+        #     sparse_softmax_cross_entropy_with_logits is computes
+        #
+        # -log(p(y_t)) for token y_t.
+        #
+        # and it doesn't sum over anything by default--so it just gives us a tensor of -log(p(y_t))
+        # of shape [batch_size, sequence_length]
+        #
+        # We use the func because of numerical stability issues:
+        #
+        # Note, log(softmax(logits)) == log(exp(logit_for_class_i)) - log(sum_i(exp(logit_for_class_i)))
+        #                            == logit_for_class_i - log(sum_i(exp(logit_for_class_i)))
+        #
+        # so we can't just use logit_for_class_i as our log prob,
+        # because it will be larger than the actual log prob
+        # by log(sum_i(exp(logit_for_class_i)))
+        #
+        # and in particular, log sum exp has numerical stability issues
+        #
+        # The reason to use sparse_softmax_cross_entropy_with_logits is
+        # that it handles numerical stability issues.
+        #
+        self.negative_log_prob_for_generated_tokens = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            logits=self.g_logits,
+            labels=self.x
         )
+        self.log_prob_for_generated_tokens = -1 * self.negative_log_prob_for_generated_tokens
+
+        # Tensorflow will compute the gradient of this formula w.r.t. the generator model params,
+        # and in doing so, it will give us a gradient estimate matching those given by the REINFORCE formula.
+        self.g_proxy_objective_for_reinforce = tf.reduce_sum(
+            self.log_prob_for_generated_tokens * self.rewards,
+        )
+
+        # In tensorflow, the optimizer takes steps in the *negative* direction of the gradient:
+        #
+        #    params := params - alpha * grad(objective)
+        #
+        # Thus, we must wrap objective in a minus sign
+        # in order to get gradient steps in the direction that maximizes the reward.
+        #
+        self.g_loss = -1 * self.g_proxy_objective_for_reinforce
 
         g_opt = self.g_optimizer(self.learning_rate)
 
@@ -166,7 +241,7 @@ class Generator(object):
             # Forget Gate
             f = tf.sigmoid(
                 tf.matmul(x, self.Wf) +
-                tf.matmul(previous_hidden_state, self.Uf) + self.bf
+                tf.matmul(previous_hidden_state, self.Uf) + self.bf + 1.0
             )
 
             # Output Gate
