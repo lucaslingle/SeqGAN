@@ -55,7 +55,7 @@ class Discriminator(object):
     Uses an embedding layer, followed by a convolutional, max-pooling and softmax layer.
     """
 
-    def __init__(self, sequence_length, vocab_size, embedding_size, filter_sizes, num_filters, filter_dilations,
+    def __init__(self, sequence_length, vocab_size, embedding_size, filter_sizes, num_filters,
                  l2_reg_lambda=0.0):
 
         # Placeholders for input, output and dropout
@@ -78,7 +78,7 @@ class Discriminator(object):
 
             # Create a convolution + maxpool layer for each filter size
             pooled_outputs = []
-            for filter_size, num_filter, dilation_rate in zip(filter_sizes, num_filters):
+            for filter_size, num_filter in zip(filter_sizes, num_filters):
                 with tf.name_scope("conv-maxpool-%s" % filter_size):
                     # Convolution Layer
                     filter_shape = [filter_size, embedding_size, 1, num_filter]

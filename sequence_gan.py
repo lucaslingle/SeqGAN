@@ -271,7 +271,8 @@ def main():
     dis_data_loader = Dis_Dataloader(
         BATCH_SIZE,
         vocab_dictionary=vocab_dict,
-        max_seq_length=SEQ_LENGTH, character_level_model_bool=FLAGS.use_character_level_model)
+        max_seq_length=SEQ_LENGTH, character_level_model_bool=FLAGS.use_character_level_model
+    )
 
     # Gen, Dis, and Oracle Models
 
@@ -289,7 +290,6 @@ def main():
         embedding_size=dis_embedding_dim,
         filter_sizes=dis_filter_sizes,
         num_filters=dis_num_filters,
-        filter_dilations=dis_filter_dilation_rates,
         l2_reg_lambda=dis_l2_reg_lambda
     )
 
