@@ -45,7 +45,7 @@ flags.DEFINE_string("generator_data_fp", "data", "generator_data_fp: filepath fo
 flags.DEFINE_string("eval_data_fp", "data", "eval_data_fp: filepath for a file the generator can write to (Note: flag ignored if using oracle)")
 flags.DEFINE_boolean("use_character_level_model", False, "use_character_level_model: if True, model characters, not words (Note: flag ignored if using oracle)")
 flags.DEFINE_boolean("use_onehot_embeddings", False, "use_onehot_embeddings: can only be used with use_character_level_model. Skips token embeddings.")
-
+flags.DEFINE_boolean("use_filter_formulas", False, "use filter formulas to adjust filter sizes, channels, and dilation rates to handle different datasets")
 FLAGS = flags.FLAGS
 
 #########################################################################################
@@ -73,8 +73,26 @@ oracle_vocab_size = 5000  # if applicable
 #########################################################################################
 dis_pre_epoch_num = FLAGS.pretrain_d_epochs
 dis_word_embedding_dim = FLAGS.d_emb_dim
+
 dis_filter_sizes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20]
 dis_num_filters = [100, 200, 200, 200, 200, 100, 100, 100, 100, 100, 160, 160]
+dis_filter_dilation_rates = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+if FLAGS.use_filter_formulas:
+    dis_num_filters[3] *= 4
+    dis_num_filters[4] *= 3
+    dis_num_filters[5] *= 2
+    dis_num_filters[6] *= 2
+
+    dis_filter_sizes.append(FLAGS.max_sequence_len // 3)
+    dis_num_filters.append(160)
+    dis_filter_dilation_rates.append(1)
+
+    dis_filter_sizes.append(FLAGS.max_sequence_len // 2)
+    dis_num_filters.append(160)
+    dis_filter_dilation_rates.append(1)
+    print(dict(zip(dis_filter_sizes, dis_num_filters)))
+
 dis_dropout_keep_prob = 0.75
 dis_l2_reg_lambda = 0.2
 dis_batch_size = 64
@@ -145,8 +163,6 @@ def oracle_loss(sess, target_lstm, data_loader):
     return np.mean(nll)
 
 def generator_gan_loss(sess, discriminator, data_loader):
-    # target_loss means the oracle negative log-likelihood tested with the oracle model "target_lstm"
-    # For more details, please see the Section 4 in https://arxiv.org/abs/1609.05473
     generator_losses = []
     data_loader.reset_pointer()
 
@@ -165,8 +181,6 @@ def generator_gan_loss(sess, discriminator, data_loader):
     return np.mean(generator_losses)
 
 def discriminator_gan_loss(sess, discriminator, data_loader):
-    # target_loss means the oracle negative log-likelihood tested with the oracle model "target_lstm"
-    # For more details, please see the Section 4 in https://arxiv.org/abs/1609.05473
     discriminator_losses = []
     data_loader.reset_pointer()
 
@@ -183,7 +197,7 @@ def discriminator_gan_loss(sess, discriminator, data_loader):
     return np.mean(discriminator_losses)
 
 def pre_train_epoch(sess, trainable_model, data_loader):
-    # Pre-train the generator using MLE for one epoch
+    # Pretrains the generator using MLE, for one epoch
     supervised_g_losses = []
     data_loader.reset_pointer()
 
@@ -275,6 +289,7 @@ def main():
         embedding_size=dis_embedding_dim,
         filter_sizes=dis_filter_sizes,
         num_filters=dis_num_filters,
+        filter_dilations=dis_filter_dilation_rates,
         l2_reg_lambda=dis_l2_reg_lambda
     )
 
