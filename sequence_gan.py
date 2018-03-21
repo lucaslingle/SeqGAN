@@ -79,10 +79,10 @@ dis_num_filters = [100, 200, 200, 200, 200, 100, 100, 100, 100, 100, 160, 160]
 dis_filter_dilation_rates = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 
 if FLAGS.use_filter_formulas:
-    dis_num_filters[3] *= 4
-    dis_num_filters[4] *= 3
-    dis_num_filters[5] *= 2
+    dis_num_filters[4] *= 4
+    dis_num_filters[5] *= 3
     dis_num_filters[6] *= 2
+    dis_num_filters[7] *= 2
 
     dis_filter_sizes.append(FLAGS.max_sequence_len // 3)
     dis_num_filters.append(160)
