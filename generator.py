@@ -137,36 +137,55 @@ class Generator(object):
         #######################################################################################################
         #  Unsupervised Training
         #######################################################################################################
-
+        #
         # we ran the recurrence to get g_logits for each step in the generated samples.
         #
         # now we can use
-        # sparse_softmax_cross_entropy_with_logits to give us the log prob of each token from the generated samples
-        # i.e., for a given integer y_t representing some token ID generated at time t,
-        #   it's literally just log(p(y_t)) for token y_t.
+        # sparse_softmax_cross_entropy_with_logits to give us the negative log prob of each token from the generated samples
         #
-        # the advantage of using sparse_softmax_cross_entropy_with_logits is that it's more numerically stable
-        # than using the naive formula for log(softmax(prob)).
+        # i.e.,
+        #     for a given integer y_t representing some token ID generated at time t,
+        #     sparse_softmax_cross_entropy_with_logits is computes
         #
-        # Moving on. Now we can weight log(p(y_t)) by the monte-carlo estimate of the rewards (named 'rewards'),
-        # and call the whole thing a loss function
+        # -log(p(y_t)) for token y_t.
         #
-        # Note that because 'rewards' is a placeholder, tf.gradients will only give us
-        # the gradient w.r.t. the log(p(y_t)) component of each term of this loss function
+        # and it doesn't sum over anything by default--so it just gives us a tensor of -log(p(y_t))
+        # of shape [batch_size, sequence_length]
         #
-        # Thus, when using this formula for a loss function, with 'rewards' as a placeholder,
-        # tf.gradients allows us to recover the exact same formula used by REINFORCE for the gradient estimate.
+        # We use the func because of numerical stability issues:
         #
-        # Note that because REINFORCE involves trying to maximize the expected reward,
-        # and because tensorflow only minimizes objective functions,
-        # we'll wrap the formula that we'll use for the REINFORCE gradient estimate
-        # with a minus sign.
+        # Note, log(softmax(logits)) == log(exp(logit_for_class_i)) - log(sum_i(exp(logit_for_class_i)))
+        #                            == logit_for_class_i - log(sum_i(exp(logit_for_class_i)))
         #
-        self.g_loss_for_reinforce = -tf.reduce_sum(
-            tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.g_logits, labels=self.x) * self.rewards,
+        # so we can't just use logit_for_class_i as our log prob,
+        # because it will be larger than the actual log prob
+        # by log(sum_i(exp(logit_for_class_i)))
+        #
+        # and in particular, log sum exp has numerical stability issues
+        #
+        # The reason to use sparse_softmax_cross_entropy_with_logits is
+        # that it handles numerical stability issues.
+        #
+        self.negative_log_prob_for_generated_tokens = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            logits=self.g_logits,
+            labels=self.x
+        )
+        self.log_prob_for_generated_tokens = -1 * self.negative_log_prob_for_generated_tokens
+
+        # Tensorflow will compute the gradient of this formula w.r.t. the generator model params,
+        # and in doing so, it will give us a gradient estimate matching those given by the REINFORCE formula.
+        self.g_proxy_objective_for_reinforce = tf.reduce_sum(
+            self.log_prob_for_generated_tokens * self.rewards,
         )
 
-        self.g_loss = self.g_loss_for_reinforce
+        # In tensorflow, the optimizer takes steps in the *negative* direction of the gradient:
+        #
+        #    params := params - alpha * grad(objective)
+        #
+        # Thus, we must wrap objective in a minus sign
+        # in order to get gradient steps in the direction that maximizes the reward.
+        #
+        self.g_loss = -1 * self.g_proxy_objective_for_reinforce
 
         g_opt = self.g_optimizer(self.learning_rate)
 
