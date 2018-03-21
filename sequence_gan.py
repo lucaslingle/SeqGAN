@@ -144,7 +144,6 @@ def oracle_loss(sess, target_lstm, data_loader):
 
     return np.mean(nll)
 
-
 def generator_gan_loss(sess, discriminator, data_loader):
     # target_loss means the oracle negative log-likelihood tested with the oracle model "target_lstm"
     # For more details, please see the Section 4 in https://arxiv.org/abs/1609.05473
@@ -164,6 +163,24 @@ def generator_gan_loss(sess, discriminator, data_loader):
         generator_losses.append(generator_loss)
 
     return np.mean(generator_losses)
+
+def discriminator_gan_loss(sess, discriminator, data_loader):
+    # target_loss means the oracle negative log-likelihood tested with the oracle model "target_lstm"
+    # For more details, please see the Section 4 in https://arxiv.org/abs/1609.05473
+    discriminator_losses = []
+    data_loader.reset_pointer()
+
+    for it in range(data_loader.num_batch):
+        x_batch, y_batch = data_loader.next_batch()
+
+        feed = {discriminator.input_x: x_batch,
+                discriminator.input_y: y_batch,
+                discriminator.dropout_keep_prob: 1.0
+                }
+        discriminator_loss = sess.run(discriminator.cross_entropy_loss, feed)
+        discriminator_losses.append(discriminator_loss)
+
+    return np.mean(discriminator_losses)
 
 def pre_train_epoch(sess, trainable_model, data_loader):
     # Pre-train the generator using MLE for one epoch
@@ -299,7 +316,8 @@ def main():
 
         if epoch % 5 == 0 or FLAGS.show_every_epoch:
             generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                             vocab_dict=vocab_dict, char_level_bool=FLAGS.use_character_level_model
+                             vocab_dict=vocab_dict,
+                             char_level_bool=FLAGS.use_character_level_model
             )
 
             likelihood_data_loader.create_batches(eval_file)
@@ -325,7 +343,8 @@ def main():
     # Do this 50 times
     for epoch in range(dis_pre_epoch_num):
         generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
-            vocab_dict=vocab_dict, char_level_bool=FLAGS.use_character_level_model
+                         vocab_dict=vocab_dict,
+                         char_level_bool=FLAGS.use_character_level_model
         )
         dis_data_loader.load_train_data(positive_file, negative_file)
         for _ in range(FLAGS.k_steps):
@@ -342,6 +361,12 @@ def main():
                 )
 
         if epoch % 5 == 0 or FLAGS.show_every_epoch:
+            generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
+                             vocab_dict=vocab_dict,
+                             char_level_bool=FLAGS.use_character_level_model
+            )
+            dis_data_loader.load_train_data(positive_file, eval_file)
+            pretrain_discriminator_cross_entropy_loss = discriminator_gan_loss(sess, discriminator, dis_data_loader)
             print('discriminator pre-train epoch {}... discriminator_cross_entropy_loss {}... datetime: {}'.format(
                 epoch, pretrain_discriminator_cross_entropy_loss, datetime.datetime.now()
             ))
@@ -398,7 +423,8 @@ def main():
         # Train the discriminator
         for _ in range(FLAGS.d_steps):
             generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
-                             vocab_dict=vocab_dict, char_level_bool=FLAGS.use_character_level_model
+                             vocab_dict=vocab_dict,
+                             char_level_bool=FLAGS.use_character_level_model
             )
             dis_data_loader.load_train_data(positive_file, negative_file)
 
@@ -412,11 +438,17 @@ def main():
                         discriminator.dropout_keep_prob: dis_dropout_keep_prob
                     }
                     _, advtrain_discriminator_cross_entropy_loss = sess.run(
-                        [discriminator.train_op, discriminator.loss], feed
+                        [discriminator.train_op, discriminator.cross_entropy_loss], feed
                     )
 
         # Test
         if (total_batch % 5 == 0) or (total_batch == TOTAL_BATCH - 1) or FLAGS.show_every_epoch:
+            generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
+                             vocab_dict=vocab_dict,
+                             char_level_bool=FLAGS.use_character_level_model
+            )
+            dis_data_loader.load_train_data(positive_file, eval_file)
+            advtrain_discriminator_cross_entropy_loss = discriminator_gan_loss(sess, discriminator, dis_data_loader)
             buffer = 'epoch: {}\t discriminator training... discriminator_cross_entropy_loss: {}\t datetime: {}'.format(
                 total_batch, advtrain_discriminator_cross_entropy_loss, datetime.datetime.now()
             )

@@ -119,7 +119,7 @@ class Discriminator(object):
                 b = tf.Variable(tf.constant(0.1, shape=[1]), name="b")
                 l2_loss += tf.nn.l2_loss(W)
                 l2_loss += tf.nn.l2_loss(b)
-                self.scores = tf.nn.xw_plus_b(self.h_drop, W, b, name="scores")
+                self.scores = tf.matmul(self.h_drop, W) + b
 
                 self.ypred_for_auc = tf.nn.sigmoid(self.scores)
 
