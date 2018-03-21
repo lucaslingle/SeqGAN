@@ -70,7 +70,7 @@ class VocabDictionary():
         return len(self.vocab_dict)
 
 
-class Gen_Data_loader():
+class Gen_Dataloader():
     def __init__(self, batch_size, vocab_dictionary=None,
                  max_seq_length=20, min_seq_length=5, character_level_model_bool=False):
         self.batch_size = batch_size
@@ -126,7 +126,7 @@ class Gen_Data_loader():
         self.pointer = 0
 
 
-class Dis_dataloader():
+class Dis_Dataloader():
     def __init__(self, batch_size, vocab_dictionary=None,
                  max_seq_length=20, min_seq_length=5, character_level_model_bool=False):
         self.batch_size = batch_size

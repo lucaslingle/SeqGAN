@@ -3,7 +3,7 @@ import numpy as np
 import tensorflow as tf
 import random
 import datetime
-from dataloader import VocabDictionary, Gen_Data_loader, Dis_dataloader
+from dataloader import VocabDictionary, Gen_Dataloader, Dis_Dataloader
 from generator import Generator
 from discriminator import Discriminator
 from rollout import ROLLOUT
@@ -160,7 +160,7 @@ def generator_gan_loss(sess, discriminator, data_loader):
                 discriminator.input_y: y_batch,
                 discriminator.dropout_keep_prob: 1.0
                 }
-        generator_loss = sess.run(discriminator.loss, feed)
+        generator_loss = sess.run(discriminator.cross_entropy_loss, feed)
         generator_losses.append(generator_loss)
 
     return np.mean(generator_losses)
@@ -214,46 +214,59 @@ def main():
 
         vocab_size = vocab_dict.get_length()
 
-        if FLAGS.use_character_level_model and FLAGS.use_onehot_embeddings:
-            # for char level models, we use one-hot encodings,
-            # so the embedding dim must be the same as the number of possible tokens
+        if FLAGS.use_onehot_embeddings:
+            # if we're using one-hot encodings,
+            # the embedding dim must be the same as the number of possible tokens:
 
             EMB_DIM = vocab_size
-            ####dis_embedding_dim = vocab_size
 
-    gen_data_loader = Gen_Data_loader(BATCH_SIZE,
-                                      vocab_dictionary=vocab_dict,
-                                      max_seq_length=SEQ_LENGTH,
-                                      character_level_model_bool=FLAGS.use_character_level_model)
 
-    likelihood_data_loader = Gen_Data_loader(BATCH_SIZE,
-                                             vocab_dictionary=vocab_dict,
-                                             max_seq_length=SEQ_LENGTH,
-                                             character_level_model_bool=FLAGS.use_character_level_model)
+    # Data loaders
 
-    dis_data_loader = Dis_dataloader(BATCH_SIZE,
-                                     vocab_dictionary=vocab_dict,
-                                     max_seq_length=SEQ_LENGTH,
-                                     character_level_model_bool=FLAGS.use_character_level_model)
-
-    generator = Generator(vocab_size, BATCH_SIZE, EMB_DIM, HIDDEN_DIM, SEQ_LENGTH,
-                          go_token=START_TOKEN,
-                          eos_token=EOS_TOKEN,
-                          pad_token=(PAD_TOKEN if vocab_dict is not None else None),
-                          use_onehot_embeddings=FLAGS.use_onehot_embeddings
+    gen_data_loader = Gen_Dataloader(
+        BATCH_SIZE,
+        vocab_dictionary=vocab_dict,
+        max_seq_length=SEQ_LENGTH,
+        character_level_model_bool=FLAGS.use_character_level_model
     )
 
-    #generator = Generator(vocab_size, BATCH_SIZE, EMB_DIM, HIDDEN_DIM, SEQ_LENGTH, START_TOKEN)
-    target_params = []
-    target_lstm = TARGET_LSTM(vocab_size, BATCH_SIZE, EMB_DIM, HIDDEN_DIM, SEQ_LENGTH, START_TOKEN, target_params) # The oracle model
+    likelihood_data_loader = Gen_Dataloader(
+        BATCH_SIZE,
+        vocab_dictionary=vocab_dict,
+        max_seq_length=SEQ_LENGTH,
+        character_level_model_bool=FLAGS.use_character_level_model
+    )
 
-    discriminator = Discriminator(sequence_length=SEQ_LENGTH,
-                                  num_classes=2,
-                                  vocab_size=vocab_size,
-                                  embedding_size=dis_embedding_dim,
-                                  filter_sizes=dis_filter_sizes,
-                                  num_filters=dis_num_filters,
-                                  l2_reg_lambda=dis_l2_reg_lambda)
+    dis_data_loader = Dis_Dataloader(
+        BATCH_SIZE,
+        vocab_dictionary=vocab_dict,
+        max_seq_length=SEQ_LENGTH, character_level_model_bool=FLAGS.use_character_level_model)
+
+    # Gen, Dis, and Oracle Models
+
+    generator = Generator(
+        vocab_size, BATCH_SIZE, EMB_DIM, HIDDEN_DIM, SEQ_LENGTH,
+        go_token=START_TOKEN,
+        eos_token=EOS_TOKEN,
+        pad_token=(PAD_TOKEN if vocab_dict is not None else None),
+        use_onehot_embeddings=FLAGS.use_onehot_embeddings
+    )
+
+    discriminator = Discriminator(
+        sequence_length=SEQ_LENGTH,
+        vocab_size=vocab_size,
+        embedding_size=dis_embedding_dim,
+        filter_sizes=dis_filter_sizes,
+        num_filters=dis_num_filters,
+        l2_reg_lambda=dis_l2_reg_lambda
+    )
+
+    target_params = []
+    target_lstm = TARGET_LSTM(
+        vocab_size, BATCH_SIZE, EMB_DIM, HIDDEN_DIM, SEQ_LENGTH,
+        START_TOKEN,
+        target_params
+    )
 
     pretrain_oracle_nll_loss = 0.0
     pretrain_cross_entropy_loss = 0.0
@@ -273,14 +286,11 @@ def main():
                          vocab_dict=vocab_dict,
                          char_level_bool=FLAGS.use_character_level_model
         )
-        # note: when using oracle data, prior code has overridden the flag for use_character_level_model,
-        # and forced it to be False.
 
     gen_data_loader.create_batches(positive_file)
 
     log = open('save/experiment-log.txt', 'w+')
 
-    #  pre-train generator
     print('Starting pre-training for the generator')
     log.write('pre-training...\n')
 
@@ -296,18 +306,18 @@ def main():
 
             if (FLAGS.use_natural_data == False):
                 pretrain_oracle_nll_loss = oracle_loss(sess, target_lstm, likelihood_data_loader)
-                print(
-                    'generator pre-train epoch {}... oracle_nll {}... training set cross entropy loss {}... datetime {}'.format(
+                print('generator pre-train epoch {}... oracle_nll {}... training set cross entropy loss {}... datetime {}'.format(
                         epoch, pretrain_oracle_nll_loss, pretrain_cross_entropy_loss, datetime.datetime.now()
-                    ))
-                buffer = 'epoch:\t' + str(epoch) + '\toracle_nll:\t' + str(pretrain_oracle_nll_loss) + '\n'
+                ))
+                buffer = 'epoch:\t' + str(epoch) + '\t' + \
+                         'oracle_nll:\t' + str(pretrain_oracle_nll_loss) + '\n'
                 log.write(buffer)
             else:
                 print('generator pre-train epoch {}... training set cross entropy loss {}... datetime {}'.format(
-                    epoch, pretrain_cross_entropy_loss, datetime.datetime.now()
+                        epoch, pretrain_cross_entropy_loss, datetime.datetime.now()
                 ))
-                buffer = 'epoch:\t' + str(epoch) + '\tpretrain_cross_entropy_loss:\t' + str(
-                    pretrain_cross_entropy_loss) + '\n'
+                buffer = 'epoch:\t' + str(epoch) + '\t' + \
+                         'pretrain_cross_entropy_loss:\t' + str(pretrain_cross_entropy_loss) + '\n'
                 log.write(buffer)
 
     print('Starting pre-training for the discriminator...')
@@ -368,7 +378,8 @@ def main():
                     total_batch, advtrain_oracle_nll_loss, datetime.datetime.now()
                 ))
 
-                buffer = 'epoch:\t' + str(total_batch) + '\toracle_nll:\t' + str(advtrain_oracle_nll_loss) + '\n'
+                buffer = 'epoch:\t' + str(total_batch) + '\t' + \
+                         'oracle_nll:\t' + str(advtrain_oracle_nll_loss) + '\n'
                 log.write(buffer)
             else:
                 advtrain_gen_cross_entropy_loss = generator_gan_loss(sess, discriminator, likelihood_data_loader)
@@ -376,7 +387,8 @@ def main():
                     total_batch, advtrain_gen_cross_entropy_loss, datetime.datetime.now()
                 ))
 
-                buffer = 'epoch:\t' + str(total_batch) + '\tgenerator_gan_loss:\t' + str(advtrain_gen_cross_entropy_loss) + '\n'
+                buffer = 'epoch:\t' + str(total_batch) + '\t' + \
+                         'generator_gan_loss:\t' + str(advtrain_gen_cross_entropy_loss) + '\n'
                 log.write(buffer)
 
         # Update roll-out parameters, if we didn't already do so

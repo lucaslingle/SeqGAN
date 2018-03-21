@@ -55,11 +55,11 @@ class Discriminator(object):
     Uses an embedding layer, followed by a convolutional, max-pooling and softmax layer.
     """
 
-    def __init__(self, sequence_length, num_classes, vocab_size, embedding_size, filter_sizes, num_filters, l2_reg_lambda=0.0):
+    def __init__(self, sequence_length, vocab_size, embedding_size, filter_sizes, num_filters, l2_reg_lambda=0.0):
 
         # Placeholders for input, output and dropout
-        self.input_x = tf.placeholder(tf.int32, [None, sequence_length], name="input_x")
-        self.input_y = tf.placeholder(tf.float32, [None, num_classes], name="input_y")
+        self.input_x = tf.placeholder(tf.int32, [None, sequence_length], name="input_x")   # token ints
+        self.input_y = tf.placeholder(tf.float32, [None, 2], name="input_y")               # one-hot encoded class
         self.dropout_keep_prob = tf.placeholder(tf.float32, name="dropout_keep_prob")
 
         # Keeping track of l2 regularization loss (optional)
@@ -115,21 +115,24 @@ class Discriminator(object):
 
             # Final (unnormalized) scores and predictions
             with tf.name_scope("output"):
-                W = tf.Variable(tf.truncated_normal([num_filters_total, num_classes - 1], stddev=0.1), name="W")
-                b = tf.Variable(tf.constant(0.1, shape=[num_classes - 1]), name="b")
+                W = tf.Variable(tf.truncated_normal([num_filters_total, 1], stddev=0.1), name="W")
+                b = tf.Variable(tf.constant(0.1, shape=[1]), name="b")
                 l2_loss += tf.nn.l2_loss(W)
                 l2_loss += tf.nn.l2_loss(b)
                 self.scores = tf.nn.xw_plus_b(self.h_drop, W, b, name="scores")
-                self.ypred_for_auc = tf.nn.softmax(self.scores)
+
+                self.ypred_for_auc = tf.nn.sigmoid(self.scores)
+
                 self.predictions = tf.cast(self.scores >= 0.5, tf.int32, name="predictions")
 
             # CalculateMean cross-entropy loss
             with tf.name_scope("loss"):
                 losses = tf.nn.sigmoid_cross_entropy_with_logits(
-                    labels=tf.expand_dims(self.input_y[:, 1], 1),
-                    logits=self.scores
+                        labels=tf.expand_dims(self.input_y[:, 1], -1),
+                        logits=self.scores
                 )
-                self.loss = tf.reduce_mean(losses) + l2_reg_lambda * l2_loss
+                self.cross_entropy_loss = tf.reduce_mean(losses)
+                self.loss = self.cross_entropy_loss + l2_reg_lambda * l2_loss
 
         self.params = [param for param in tf.trainable_variables() if 'discriminator' in param.name]
         d_optimizer = tf.train.AdamOptimizer(1e-4)
