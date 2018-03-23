@@ -80,7 +80,7 @@ class ROLLOUT(object):
             for given_num in range(1, self.sequence_length):
                 feed = {self.x: input_x, self.given_num: given_num}
                 samples = sess.run(self.gen_x, feed)
-                feed = {discriminator.input_x: samples, discriminator.dropout_keep_prob: 1.0}
+                feed = {discriminator.input_x: samples, discriminator.training_mode: False}
                 ypred_for_auc = sess.run(discriminator.ypred_for_auc, feed)
                 ypred = np.array([item[-1] for item in ypred_for_auc])  # probability real
                 if i == 0:
@@ -89,7 +89,7 @@ class ROLLOUT(object):
                     rewards[given_num - 1] += ypred
 
             # the last token reward
-            feed = {discriminator.input_x: input_x, discriminator.dropout_keep_prob: 1.0}
+            feed = {discriminator.input_x: input_x, discriminator.training_mode: False}
             ypred_for_auc = sess.run(discriminator.ypred_for_auc, feed)
             ypred = np.array([item[-1] for item in ypred_for_auc]) # probability real
             if i == 0:
