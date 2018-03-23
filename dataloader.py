@@ -10,11 +10,6 @@ class VocabDictionary():
         self.max_seq_length = max_seq_length
         self.drop_freq_thresh = drop_freq_thresh
 
-        #self.go_token = '_GO'
-        #self.unk_token = '_UNK'
-        #self.pad_token = '_PAD'
-        #self.eos_token = '_EOS'
-
         self.go_token = '\x01'
         self.unk_token = '\x02'
         self.pad_token = '\x03'
@@ -112,9 +107,12 @@ class Gen_Dataloader():
                     parse_line.extend([pad_int for _ in range(pad_len)])
                     self.token_stream.append(parse_line)
 
+        shuffle_indices = np.random.permutation(np.arange(len(self.token_stream)))
+        self.token_stream = np.array(self.token_stream)[shuffle_indices]
+
         self.num_batch = int(len(self.token_stream) / self.batch_size)
         self.token_stream = self.token_stream[:self.num_batch * self.batch_size]
-        self.sequence_batch = np.split(np.array(self.token_stream), self.num_batch, 0)
+        self.sequence_batch = np.split(self.token_stream, self.num_batch, 0)
         self.pointer = 0
 
     def next_batch(self):
@@ -174,7 +172,7 @@ class Dis_Dataloader():
         with open(negative_file, 'r') as fin:
             for line in fin:
                 line = line.strip().split("\t")[0]
-                line = line.split() if self.vocab_dictionary is None else word_tokenize(line)
+                line = line.split() if self.vocab_dictionary is None else self.tokenizer(line)
                 parse_line = [int(x) if self.vocab_dictionary is None else self.vocab_dictionary.lookup(x)
                               for x in line]
 
@@ -187,36 +185,9 @@ class Dis_Dataloader():
                     parse_line.extend([pad_int for _ in range(pad_len)])
                     negative_examples.append(parse_line)
 
-        '''
-        #  if we were willing to permit class imbalances in the batches, we could mix the samples
-        #  in which case, we would actually need to permute the combined list of sentences
-        #  AND the combined list of labels
-        #
-        self.sentences = np.array(positive_examples + negative_examples)
-        positive_labels = [[0, 1] for _ in positive_examples]
-        negative_labels = [[1, 0] for _ in negative_examples]
+        # we don't want to permit class imbalances per batch.
 
-        self.labels = np.array(positive_labels + negative_labels)
-        shuffle_indices = np.random.permutation(np.arange(len(self.labels)))
-
-        self.sentences = self.sentences[shuffle_indices]
-        self.labels = self.labels[shuffle_indices]  
-
-        self.num_batch = int(len(self.positive_labels) / self.batch_size)
-
-        self.sentences = self.sentences[:self.num_batch * self.batch_size]
-        self.labels = self.labels[:self.num_batch * self.batch_size]
-        self.sentences_batches = np.split(self.sentences, self.num_batch, 0)
-        self.labels_batches = np.split(self.labels, self.num_batch, 0)
-
-        self.pointer = 0 
-        '''
-
-        # for now though, we don't want to permit class imbalances per batch.
-
-        #assert len(positive_examples) == len(negative_examples)
         L = min(len(positive_examples), len(negative_examples))
-
         assert L > 0
 
         positive_examples = positive_examples[0:L]

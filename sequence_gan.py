@@ -3,6 +3,7 @@ import numpy as np
 import tensorflow as tf
 import random
 import datetime
+from collections import OrderedDict
 from dataloader import VocabDictionary, Gen_Dataloader, Dis_Dataloader
 from generator import Generator
 from discriminator import Discriminator
@@ -45,7 +46,6 @@ flags.DEFINE_string("generator_data_fp", "data", "generator_data_fp: filepath fo
 flags.DEFINE_string("eval_data_fp", "data", "eval_data_fp: filepath for a file the generator can write to (Note: flag ignored if using oracle)")
 flags.DEFINE_boolean("use_character_level_model", False, "use_character_level_model: if True, model characters, not words (Note: flag ignored if using oracle)")
 flags.DEFINE_boolean("use_onehot_embeddings", False, "use_onehot_embeddings: can only be used with use_character_level_model. Skips token embeddings.")
-flags.DEFINE_boolean("use_filter_formulas", False, "use filter formulas to adjust filter sizes, channels, and dilation rates to handle different datasets")
 FLAGS = flags.FLAGS
 
 #########################################################################################
@@ -76,25 +76,8 @@ dis_word_embedding_dim = FLAGS.d_emb_dim
 
 dis_filter_sizes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20]
 dis_num_filters = [100, 200, 200, 200, 200, 100, 100, 100, 100, 100, 160, 160]
-dis_filter_dilation_rates = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-
-if FLAGS.use_filter_formulas:
-    dis_num_filters[4] *= 2
-    dis_num_filters[5] *= 3
-    dis_num_filters[6] *= 2
-
-    dis_filter_sizes.append(FLAGS.max_sequence_len // 3)
-    dis_num_filters.append(160)
-    dis_filter_dilation_rates.append(1)
-
-    dis_filter_sizes.append(FLAGS.max_sequence_len // 2)
-    dis_num_filters.append(160)
-    dis_filter_dilation_rates.append(1)
-
-    print(dict(zip(dis_filter_sizes, dis_num_filters)))
 
 dis_dropout_keep_prob = 0.75
-dis_l2_reg_lambda = 0.2
 dis_batch_size = 64
 
 #########################################################################################
@@ -124,10 +107,6 @@ def generate_samples(sess, trainable_model, batch_size, generated_num, output_fi
         return str(token_int)
 
     def _natural_get_char_for_printing(token_int):
-        # if token in vocab_dict.special_tokens and token != vocab_dict.eos_token:
-        #    return ''
-        # else:
-        #    return token
         token = vocab_dict.reverse_lookup(token_int)
         return token
 
@@ -148,8 +127,7 @@ def generate_samples(sess, trainable_model, batch_size, generated_num, output_fi
             buffer = sep_char.join(token_string_list) + '\n'
             fout.write(buffer)
 
-
-def oracle_loss(sess, target_lstm, data_loader):
+def compute_oracle_loss(sess, target_lstm, data_loader):
     # target_loss means the oracle negative log-likelihood tested with the oracle model "target_lstm"
     # For more details, please see the Section 4 in https://arxiv.org/abs/1609.05473
     nll = []
@@ -157,56 +135,134 @@ def oracle_loss(sess, target_lstm, data_loader):
 
     for it in range(data_loader.num_batch):
         x_batch = data_loader.next_batch()
-        g_loss = sess.run(target_lstm.pretrain_loss, {target_lstm.x: x_batch})
-        nll.append(g_loss)
+        oracle_loss_batch = sess.run(target_lstm.pretrain_loss, {target_lstm.x: x_batch})
+        nll.append(oracle_loss_batch)
 
     return np.mean(nll)
 
-def generator_gan_loss(sess, discriminator, data_loader):
-    generator_losses = []
+def compute_g_loss(sess, discriminator, data_loader):
+    g_losses = []
     data_loader.reset_pointer()
 
-    y_batch = np.concatenate([np.zeros((BATCH_SIZE, 1)), np.ones((BATCH_SIZE, 1))], axis=1)
+    y_fake_batch = np.zeros((BATCH_SIZE, 2))
+    y_fake_batch[:,1] += 1.0
 
     for it in range(data_loader.num_batch):
-        x_batch = data_loader.next_batch()
+        x_fake_batch = data_loader.next_batch()
 
-        feed = {discriminator.input_x: x_batch,
-                discriminator.input_y: y_batch,
+        feed = {discriminator.input_x: x_fake_batch,
+                discriminator.input_y: y_fake_batch,
                 discriminator.dropout_keep_prob: 1.0
                 }
-        generator_loss = sess.run(discriminator.cross_entropy_loss, feed)
-        generator_losses.append(generator_loss)
+        g_loss_batch = sess.run(discriminator.loss, feed)
+        g_losses.append(g_loss_batch)
 
-    return np.mean(generator_losses)
+    return np.mean(g_losses)
 
-def discriminator_gan_loss(sess, discriminator, data_loader):
-    discriminator_losses = []
+def compute_d_loss(sess, discriminator, data_loader):
+    d_losses = []
     data_loader.reset_pointer()
 
     for it in range(data_loader.num_batch):
-        x_batch, y_batch = data_loader.next_batch()
+        x_mixed_batch, y_mixed_batch = data_loader.next_batch()
 
-        feed = {discriminator.input_x: x_batch,
-                discriminator.input_y: y_batch,
+        feed = {discriminator.input_x: x_mixed_batch,
+                discriminator.input_y: y_mixed_batch,
                 discriminator.dropout_keep_prob: 1.0
                 }
-        discriminator_loss = sess.run(discriminator.cross_entropy_loss, feed)
-        discriminator_losses.append(discriminator_loss)
+        d_loss_batch = sess.run(discriminator.loss, feed)
+        d_losses.append(d_loss_batch)
 
-    return np.mean(discriminator_losses)
+    return np.mean(d_losses)
+
+def mixeddata_label_prediction_avg(sess, discriminator, disc_data_loader):
+    label_preds = []
+    disc_data_loader.reset_pointer()
+
+    for it in range(disc_data_loader.num_batch):
+        x_batch, y_batch = disc_data_loader.next_batch()
+
+        feed = {discriminator.input_x: x_batch,
+                discriminator.dropout_keep_prob: 1.0
+                }
+        label_pred_batch = discriminator.predictions.eval(feed, session=sess)
+        label_preds.append(label_pred_batch)
+
+    return np.mean(label_preds)
+
+def fakedata_label_prediction_avg(sess, discriminator, likelihood_data_loader):
+    label_preds = []
+    likelihood_data_loader.reset_pointer()
+
+    for it in range(likelihood_data_loader.num_batch):
+        x_batch = likelihood_data_loader.next_batch()
+
+        feed = {discriminator.input_x: x_batch,
+                discriminator.dropout_keep_prob: 1.0
+                }
+        label_pred_batch = discriminator.predictions.eval(feed, session=sess)
+        label_preds.append(label_pred_batch)
+
+    return np.mean(label_preds)
+
+def realdata_label_prediction_avg(sess, discriminator, gen_data_loader):
+    label_preds = []
+    gen_data_loader.reset_pointer()
+
+    for it in range(gen_data_loader.num_batch):
+        x_batch = gen_data_loader.next_batch()
+
+        feed = {discriminator.input_x: x_batch,
+                discriminator.dropout_keep_prob: 1.0
+                }
+        label_pred_batch = discriminator.predictions.eval(feed, session=sess)
+        label_preds.append(label_pred_batch)
+
+    return np.mean(label_preds)
+
 
 def pre_train_epoch(sess, trainable_model, data_loader):
-    # Pretrains the generator using MLE, for one epoch
-    supervised_g_losses = []
+    # Pretrains the generator for one epoch, using MLE on the token sequences
+    pretrain_losses = []
     data_loader.reset_pointer()
 
     for it in range(data_loader.num_batch):
         batch = data_loader.next_batch()
-        _, g_loss = trainable_model.pretrain_step(sess, batch)
-        supervised_g_losses.append(g_loss)
+        _, pretrain_loss_batch = trainable_model.pretrain_step(sess, batch)
+        pretrain_losses.append(pretrain_loss_batch)
 
-    return np.mean(supervised_g_losses)
+    return np.mean(pretrain_losses)
+
+def log_all_the_things(sess, discriminator, mixed_data_loader, fake_data_loader, real_data_loader,
+                       logging_prefix_string):
+
+    kv = OrderedDict()
+
+    d_loss = compute_d_loss(sess, discriminator, mixed_data_loader)
+    kv['d_loss'] = d_loss
+
+    g_loss = compute_g_loss(sess, discriminator, fake_data_loader)
+    kv['g_loss'] = g_loss
+
+    mixeddata_label_pred_avg = mixeddata_label_prediction_avg(sess, discriminator, mixed_data_loader)
+    kv['mixeddata_label_pred_avg'] = mixeddata_label_pred_avg
+
+    fakedata_label_pred_avg = fakedata_label_prediction_avg(sess, discriminator, fake_data_loader)
+    kv['fakedata_label_pred_avg'] = fakedata_label_pred_avg
+
+    realdata_label_pred_avg = realdata_label_prediction_avg(sess, discriminator, real_data_loader)
+    kv['realdata_label_pred_avg'] = realdata_label_pred_avg
+
+    timestamp = datetime.datetime.now()
+    kv['timestamp'] = timestamp
+
+    components = [logging_prefix_string]
+    components.extend(["{}: {}".format(k, v) for k, v in kv.items()])
+
+    log_msg = '\n\t '.join(components)
+    print(log_msg)
+
+    return kv
 
 
 def main():
@@ -248,12 +304,9 @@ def main():
         if FLAGS.use_onehot_embeddings:
             # if we're using one-hot encodings,
             # the embedding dim must be the same as the number of possible tokens:
-
             EMB_DIM = vocab_size
 
-
     # Data loaders
-
     gen_data_loader = Gen_Dataloader(
         BATCH_SIZE,
         vocab_dictionary=vocab_dict,
@@ -271,7 +324,8 @@ def main():
     dis_data_loader = Dis_Dataloader(
         BATCH_SIZE,
         vocab_dictionary=vocab_dict,
-        max_seq_length=SEQ_LENGTH, character_level_model_bool=FLAGS.use_character_level_model
+        max_seq_length=SEQ_LENGTH,
+        character_level_model_bool=FLAGS.use_character_level_model
     )
 
     # Gen, Dis, and Oracle Models
@@ -289,8 +343,7 @@ def main():
         vocab_size=vocab_size,
         embedding_size=dis_embedding_dim,
         filter_sizes=dis_filter_sizes,
-        num_filters=dis_num_filters,
-        l2_reg_lambda=dis_l2_reg_lambda
+        num_filters=dis_num_filters
     )
 
     target_params = []
@@ -299,13 +352,6 @@ def main():
         START_TOKEN,
         target_params
     )
-
-    pretrain_oracle_nll_loss = 0.0
-    pretrain_cross_entropy_loss = 0.0
-    pretrain_discriminator_cross_entropy_loss = 0.0
-    advtrain_oracle_nll_loss = 0.0
-    advtrain_gen_cross_entropy_loss = 0.0
-    advtrain_discriminator_cross_entropy_loss = 0.0
 
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
@@ -330,38 +376,57 @@ def main():
         pretrain_cross_entropy_loss = pre_train_epoch(sess, generator, gen_data_loader)
 
         if epoch % 5 == 0 or FLAGS.show_every_epoch:
-            generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                             vocab_dict=vocab_dict,
-                             char_level_bool=FLAGS.use_character_level_model
-            )
-
-            likelihood_data_loader.create_batches(eval_file)
 
             if (FLAGS.use_natural_data == False):
-                pretrain_oracle_nll_loss = oracle_loss(sess, target_lstm, likelihood_data_loader)
+                generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
+                                 vocab_dict=vocab_dict,
+                                 char_level_bool=FLAGS.use_character_level_model
+                )
+
+                likelihood_data_loader.create_batches(eval_file)
+
+                oracle_nll_loss = compute_oracle_loss(sess, target_lstm, likelihood_data_loader)
+
                 print('generator pre-train epoch {}... oracle_nll {}... training set cross entropy loss {}... datetime {}'.format(
-                        epoch, pretrain_oracle_nll_loss, pretrain_cross_entropy_loss, datetime.datetime.now()
+                        epoch, oracle_nll_loss, pretrain_cross_entropy_loss, datetime.datetime.now()
                 ))
                 buffer = 'epoch:\t' + str(epoch) + '\t' + \
-                         'oracle_nll:\t' + str(pretrain_oracle_nll_loss) + '\n'
+                         'oracle_nll:\t' + str(oracle_nll_loss) + '\n'
                 log.write(buffer)
             else:
-                print('generator pre-train epoch {}... training set cross entropy loss {}... datetime {}'.format(
-                        epoch, pretrain_cross_entropy_loss, datetime.datetime.now()
-                ))
+                generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
+                                 vocab_dict=vocab_dict,
+                                 char_level_bool=FLAGS.use_character_level_model
+                )
+
+                dis_data_loader.load_train_data(positive_file, eval_file)
+                likelihood_data_loader.create_batches(eval_file)
+                gen_data_loader.create_batches(positive_file)
+
+                logging_prefix_string = 'generator pre-train epoch {}\n\t token_cross_entropy_loss: {}'.format(
+                    epoch, pretrain_cross_entropy_loss
+                )
+
+                log_all_the_things(
+                    sess=sess, discriminator=discriminator,
+                    mixed_data_loader=dis_data_loader,
+                    fake_data_loader=likelihood_data_loader,
+                    real_data_loader=gen_data_loader,
+                    logging_prefix_string=logging_prefix_string
+                )
+
                 buffer = 'epoch:\t' + str(epoch) + '\t' + \
                          'pretrain_cross_entropy_loss:\t' + str(pretrain_cross_entropy_loss) + '\n'
                 log.write(buffer)
 
     print('Starting pre-training for the discriminator...')
-    # Generate some data from the generator, train 3 epochs on the oracle data and generator data
-    # Do this 50 times
     for epoch in range(dis_pre_epoch_num):
         generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
                          vocab_dict=vocab_dict,
                          char_level_bool=FLAGS.use_character_level_model
         )
         dis_data_loader.load_train_data(positive_file, negative_file)
+
         for _ in range(FLAGS.k_steps):
             dis_data_loader.reset_pointer()
             for it in range(dis_data_loader.num_batch):
@@ -381,10 +446,18 @@ def main():
                              char_level_bool=FLAGS.use_character_level_model
             )
             dis_data_loader.load_train_data(positive_file, eval_file)
-            pretrain_discriminator_cross_entropy_loss = discriminator_gan_loss(sess, discriminator, dis_data_loader)
-            print('discriminator pre-train epoch {}... discriminator_cross_entropy_loss {}... datetime: {}'.format(
-                epoch, pretrain_discriminator_cross_entropy_loss, datetime.datetime.now()
-            ))
+            likelihood_data_loader.create_batches(eval_file)
+            gen_data_loader.create_batches(positive_file)
+
+            logging_prefix_string = 'discriminator pre-train epoch {}... '.format(epoch)
+
+            log_all_the_things(
+                sess=sess, discriminator=discriminator,
+                mixed_data_loader=dis_data_loader,
+                fake_data_loader=likelihood_data_loader,
+                real_data_loader=gen_data_loader,
+                logging_prefix_string=logging_prefix_string
+            )
 
     rollout = ROLLOUT(generator, 0.0)
 
@@ -406,29 +479,46 @@ def main():
 
         # Evaluate the generator
         if (total_batch % 5 == 0) or (total_batch == TOTAL_BATCH - 1) or FLAGS.show_every_epoch:
-            generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                             vocab_dict=vocab_dict,
-                             char_level_bool=FLAGS.use_character_level_model
-            )
-            likelihood_data_loader.create_batches(eval_file)
 
             if (FLAGS.use_natural_data == False):
-                advtrain_oracle_nll_loss = oracle_loss(sess, target_lstm, likelihood_data_loader)
+
+                generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
+                                 vocab_dict=vocab_dict,
+                                 char_level_bool=FLAGS.use_character_level_model
+                )
+
+                oracle_nll_loss = compute_oracle_loss(sess, target_lstm, likelihood_data_loader)
                 print('epoch: {}\t generator training... oracle_nll: {}\t datetime: {}'.format(
-                    total_batch, advtrain_oracle_nll_loss, datetime.datetime.now()
+                    total_batch, oracle_nll_loss, datetime.datetime.now()
                 ))
 
                 buffer = 'epoch:\t' + str(total_batch) + '\t' + \
-                         'oracle_nll:\t' + str(advtrain_oracle_nll_loss) + '\n'
+                         'oracle_nll:\t' + str(oracle_nll_loss) + '\n'
                 log.write(buffer)
             else:
-                advtrain_gen_cross_entropy_loss = generator_gan_loss(sess, discriminator, likelihood_data_loader)
-                print('epoch: {}\t generator training... generator_gan_loss: {}\t datetime: {}'.format(
-                    total_batch, advtrain_gen_cross_entropy_loss, datetime.datetime.now()
-                ))
+                generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
+                                 vocab_dict=vocab_dict,
+                                 char_level_bool=FLAGS.use_character_level_model
+                                 )
+
+                dis_data_loader.load_train_data(positive_file, eval_file)
+                likelihood_data_loader.create_batches(eval_file)
+                gen_data_loader.create_batches(positive_file)
+
+                logging_prefix_string = 'adversarial epoch: {}\n\t generator training... '.format(total_batch)
+
+                kv = log_all_the_things(
+                    sess=sess, discriminator=discriminator,
+                    mixed_data_loader=dis_data_loader,
+                    fake_data_loader=likelihood_data_loader,
+                    real_data_loader=gen_data_loader,
+                    logging_prefix_string=logging_prefix_string
+                )
+
+                g_loss = kv['g_loss']
 
                 buffer = 'epoch:\t' + str(total_batch) + '\t' + \
-                         'generator_gan_loss:\t' + str(advtrain_gen_cross_entropy_loss) + '\n'
+                         'g_loss:\t' + str(g_loss) + '\n'
                 log.write(buffer)
 
         # Update roll-out parameters, if we didn't already do so
@@ -452,9 +542,7 @@ def main():
                         discriminator.input_y: y_batch,
                         discriminator.dropout_keep_prob: dis_dropout_keep_prob
                     }
-                    _, advtrain_discriminator_cross_entropy_loss = sess.run(
-                        [discriminator.train_op, discriminator.cross_entropy_loss], feed
-                    )
+                    _ = sess.run(discriminator.train_op, feed)
 
         # Test
         if (total_batch % 5 == 0) or (total_batch == TOTAL_BATCH - 1) or FLAGS.show_every_epoch:
@@ -463,11 +551,24 @@ def main():
                              char_level_bool=FLAGS.use_character_level_model
             )
             dis_data_loader.load_train_data(positive_file, eval_file)
-            advtrain_discriminator_cross_entropy_loss = discriminator_gan_loss(sess, discriminator, dis_data_loader)
-            buffer = 'epoch: {}\t discriminator training... discriminator_cross_entropy_loss: {}\t datetime: {}'.format(
-                total_batch, advtrain_discriminator_cross_entropy_loss, datetime.datetime.now()
+            likelihood_data_loader.create_batches(eval_file)
+            gen_data_loader.create_batches(positive_file)
+
+            logging_prefix_string = 'adversarial epoch: {}\n\t discriminator training... '.format(total_batch)
+
+            kv = log_all_the_things(
+                sess=sess, discriminator=discriminator,
+                mixed_data_loader=dis_data_loader,
+                fake_data_loader=likelihood_data_loader,
+                real_data_loader=gen_data_loader,
+                logging_prefix_string=logging_prefix_string
             )
-            print(buffer)
+
+            d_loss = kv['d_loss']
+
+            buffer = 'epoch:\t' + str(total_batch) + '\t' + \
+                     'd_loss:\t' + str(d_loss) + '\n'
+            log.write(buffer)
 
 
     log.close()
