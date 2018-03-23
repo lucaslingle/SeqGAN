@@ -152,7 +152,7 @@ def compute_g_loss(sess, discriminator, data_loader):
 
         feed = {discriminator.input_x: x_fake_batch,
                 discriminator.input_y: y_fake_batch,
-                discriminator.dropout_keep_prob: 1.0
+                discriminator.training_mode: False
                 }
         g_loss_batch = sess.run(discriminator.loss, feed)
         g_losses.append(g_loss_batch)
@@ -168,7 +168,7 @@ def compute_d_loss(sess, discriminator, data_loader):
 
         feed = {discriminator.input_x: x_mixed_batch,
                 discriminator.input_y: y_mixed_batch,
-                discriminator.dropout_keep_prob: 1.0
+                discriminator.training_mode: False
                 }
         d_loss_batch = sess.run(discriminator.loss, feed)
         d_losses.append(d_loss_batch)
@@ -183,7 +183,7 @@ def mixeddata_label_prediction_avg(sess, discriminator, disc_data_loader):
         x_batch, y_batch = disc_data_loader.next_batch()
 
         feed = {discriminator.input_x: x_batch,
-                discriminator.dropout_keep_prob: 1.0
+                discriminator.training_mode: False
                 }
         label_pred_batch = discriminator.predictions.eval(feed, session=sess)
         label_preds.append(label_pred_batch)
@@ -198,7 +198,7 @@ def fakedata_label_prediction_avg(sess, discriminator, likelihood_data_loader):
         x_batch = likelihood_data_loader.next_batch()
 
         feed = {discriminator.input_x: x_batch,
-                discriminator.dropout_keep_prob: 1.0
+                discriminator.training_mode: False
                 }
         label_pred_batch = discriminator.predictions.eval(feed, session=sess)
         label_preds.append(label_pred_batch)
@@ -213,7 +213,7 @@ def realdata_label_prediction_avg(sess, discriminator, gen_data_loader):
         x_batch = gen_data_loader.next_batch()
 
         feed = {discriminator.input_x: x_batch,
-                discriminator.dropout_keep_prob: 1.0
+                discriminator.training_mode: False
                 }
         label_pred_batch = discriminator.predictions.eval(feed, session=sess)
         label_preds.append(label_pred_batch)
@@ -343,7 +343,8 @@ def main():
         vocab_size=vocab_size,
         embedding_size=dis_embedding_dim,
         filter_sizes=dis_filter_sizes,
-        num_filters=dis_num_filters
+        num_filters=dis_num_filters,
+        dropout_keep_prob=dis_dropout_keep_prob
     )
 
     target_params = []
@@ -434,11 +435,9 @@ def main():
                 feed = {
                     discriminator.input_x: x_batch,
                     discriminator.input_y: y_batch,
-                    discriminator.dropout_keep_prob: dis_dropout_keep_prob
+                    discriminator.training_mode: True
                 }
-                _, pretrain_discriminator_cross_entropy_loss = sess.run(
-                    [discriminator.train_op, discriminator.loss], feed
-                )
+                _ = sess.run(discriminator.train_op, feed)
 
         if epoch % 5 == 0 or FLAGS.show_every_epoch:
             generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
@@ -499,7 +498,7 @@ def main():
                 generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
                                  vocab_dict=vocab_dict,
                                  char_level_bool=FLAGS.use_character_level_model
-                                 )
+                )
 
                 dis_data_loader.load_train_data(positive_file, eval_file)
                 likelihood_data_loader.create_batches(eval_file)
@@ -540,7 +539,7 @@ def main():
                     feed = {
                         discriminator.input_x: x_batch,
                         discriminator.input_y: y_batch,
-                        discriminator.dropout_keep_prob: dis_dropout_keep_prob
+                        discriminator.training_mode: True
                     }
                     _ = sess.run(discriminator.train_op, feed)
 

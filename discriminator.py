@@ -7,12 +7,13 @@ class Discriminator(object):
     Uses an embedding layer, followed by a convolutional, max-pooling and softmax layer.
     """
 
-    def __init__(self, sequence_length, vocab_size, embedding_size, filter_sizes, num_filters):
+    def __init__(self, sequence_length, vocab_size, embedding_size, filter_sizes, num_filters, dropout_keep_prob):
 
         # Placeholders for input, output and dropout
         self.input_x = tf.placeholder(tf.int32, [None, sequence_length], name="input_x")   # token ints
         self.input_y = tf.placeholder(tf.float32, [None, 2], name="input_y")               # one-hot encoded class
-        self.dropout_keep_prob = tf.placeholder(tf.float32, name="dropout_keep_prob")
+        self.training_mode = tf.placeholder(tf.bool, name="training_mode")
+        self.dropout_keep_prob = dropout_keep_prob
 
         with tf.variable_scope('discriminator'):
 
@@ -63,10 +64,8 @@ class Discriminator(object):
 
             # Add dropout
             with tf.name_scope("dropout"):
-                self.h_drop = tf.layers.dropout(self.h_highway, rate=(1.0 - self.dropout_keep_prob), training=True)
-
-                # ^ test time has keep prob placeholder set to 1.0,
-                # so the "training=True" setting won't matter
+                self.drop_rate = 1.0 - self.dropout_keep_prob
+                self.h_drop = tf.layers.dropout(self.h_highway, rate=self.drop_rate, training=self.training_mode)
 
             # Logits, etc.
             with tf.name_scope("output"):
