@@ -1,111 +1,29 @@
 import numpy as np
 from nltk import word_tokenize
 from collections import Counter
-
-class VocabDictionary():
-    def __init__(self, data_fp, max_seq_length=20, character_level_model_bool=False, drop_freq_thresh=10):
-
-        self.character_level_model_bool = character_level_model_bool
-        self.counter = Counter()
-        self.max_seq_length = max_seq_length
-        self.drop_freq_thresh = drop_freq_thresh
-
-        self.go_token = '\x01'
-        self.unk_token = '\x02'
-        self.pad_token = '\x03'
-        self.eos_token = '\x04'
-
-        self.special_tokens = [self.go_token, self.unk_token, self.pad_token, self.eos_token]
-
-        def _char_tokenize(line):
-            line_tokens_list = [c for c in line if ord(c) < 128]
-            return line_tokens_list
-
-        def _word_tokenize(line):
-            line_tokens_list = word_tokenize(line)
-            return line_tokens_list
-
-        def tokenizerFactory():
-            return _char_tokenize if self.character_level_model_bool else _word_tokenize
-
-        self.tokenizer = tokenizerFactory()
-
-        with open(data_fp, 'r') as f:
-            for line in f:
-                line = line.strip().split("\t")[0]
-                line_tokens_list = self.tokenizer(line)
-                self.counter.update(line_tokens_list)
-
-        special_tokens_in_original_data = set(self.special_tokens).intersection(list(self.counter.keys()))
-        assert len(special_tokens_in_original_data) == 0
-
-        self.counter = Counter({k: v for k, v in self.counter.items() if v > self.drop_freq_thresh})
-
-        self.ordered_vocab_list = []
-        self.ordered_vocab_list.append(self.go_token)  # _GO token must be index 0
-        self.ordered_vocab_list.append(self.unk_token)  # _UNK token must be index 1
-        self.ordered_vocab_list.append(self.pad_token)  # _PAD token must be index 2
-        self.ordered_vocab_list.append(self.eos_token)  # _EOS token must be index 3
-        self.ordered_vocab_list.extend([
-            x for x in self.special_tokens if x not in [self.go_token, self.unk_token, self.pad_token, self.eos_token]
-          ]
-        )
-        self.ordered_vocab_list.extend(sorted(list(self.counter.keys())))
-
-        self.vocab_dict = {w: i for i, w in enumerate(self.ordered_vocab_list, 0)}
-        self.int_to_token_dict = {i: w for i, w in enumerate(self.ordered_vocab_list, 0)}
-
-    def lookup(self, token):
-        return self.vocab_dict[token] if token in self.vocab_dict else self.vocab_dict[self.unk_token]
-
-    def reverse_lookup(self, word_id):
-        return self.int_to_token_dict[word_id]
-
-    def get_length(self):
-        return len(self.vocab_dict)
-
+from utils.sequence_extractor import SequenceExtractor
 
 class Gen_Dataloader():
-    def __init__(self, batch_size, vocab_dictionary=None,
-                 max_seq_length=20, min_seq_length=5, character_level_model_bool=False):
+    def __init__(self, vocab_dict, dataset_reader, batch_size):
+
+        self.vocab_dict = vocab_dict
+        self.dataset_reader = dataset_reader
         self.batch_size = batch_size
-        self.token_stream = []
-        self.vocab_dictionary = vocab_dictionary
-        self.max_seq_length = max_seq_length
-        self.min_seq_length = min_seq_length
-        self.character_level_model_bool = character_level_model_bool
 
-        def _char_tokenize(line):
-            line_tokens_list = [c for c in line if ord(c) < 128]
-            return line_tokens_list
-
-        def _word_tokenize(line):
-            line_tokens_list = word_tokenize(line)
-            return line_tokens_list
-
-        def tokenizerFactory():
-            return _char_tokenize if self.character_level_model_bool else _word_tokenize
-
-        self.tokenizer = tokenizerFactory()
-
-    def create_batches(self, data_file):
         self.token_stream = []
 
-        with open(data_file, 'r') as f:
-            for line in f:
-                line = line.strip().split("\t")[0]
-                line = line.split() if self.vocab_dictionary is None else self.tokenizer(line)
-                parse_line = [int(x) if self.vocab_dictionary is None else self.vocab_dictionary.lookup(x)
-                              for x in line]
+    def create_batches(self):
 
-                if len(parse_line) == self.max_seq_length:
-                    self.token_stream.append(parse_line)
-                elif (self.vocab_dictionary is not None) and len(parse_line) < self.max_seq_length and len(parse_line) >= self.min_seq_length:
-                    pad_token = self.vocab_dictionary.pad_token
-                    pad_int = self.vocab_dictionary.lookup(pad_token)
-                    pad_len = self.max_seq_length - len(parse_line)
-                    parse_line.extend([pad_int for _ in range(pad_len)])
-                    self.token_stream.append(parse_line)
+        self.dataset_reader.reprocess()
+
+        textcol_series = self.dataset_reader.standardized_df[self.dataset_reader.text_colname]
+        textcol_series = textcol_series.apply(
+            lambda line: [self.vocab_dict.lookup(x) for x in self.dataset_reader.seq_extractor.tokenize(line)]
+        )
+
+        self.token_stream = textcol_series.tolist()
+        self.token_stream = [token_ints_list for token_ints_list in self.token_stream
+                             if len(token_ints_list) == self.dataset_reader.max_seq_length]
 
         shuffle_indices = np.random.permutation(np.arange(len(self.token_stream)))
         self.token_stream = np.array(self.token_stream)[shuffle_indices]
@@ -125,68 +43,41 @@ class Gen_Dataloader():
 
 
 class Dis_Dataloader():
-    def __init__(self, batch_size, vocab_dictionary=None,
-                 max_seq_length=20, min_seq_length=5, character_level_model_bool=False):
+    def __init__(self, vocab_dict, positive_dataset_reader, negative_dataset_reader, batch_size):
+
+        self.vocab_dict = vocab_dict
+        self.positive_dataset_reader = positive_dataset_reader
+        self.negative_dataset_reader = negative_dataset_reader
         self.batch_size = batch_size
-        self.sentences = np.array([])
-        self.labels = np.array([])
-        self.vocab_dictionary = vocab_dictionary
-        self.max_seq_length = max_seq_length
-        self.min_seq_length = min_seq_length
-        self.character_level_model_bool = character_level_model_bool
 
-        def _char_tokenize(line):
-            line_tokens_list = [c for c in line if ord(c) < 128]
-            return line_tokens_list
+        self.token_stream = []
 
-        def _word_tokenize(line):
-            line_tokens_list = word_tokenize(line)
-            return line_tokens_list
+    def load_train_data(self):
 
-        def tokenizerFactory():
-            return _char_tokenize if self.character_level_model_bool else _word_tokenize
+        self.positive_dataset_reader.reprocess()
+        self.negative_dataset_reader.reprocess()
 
-        self.tokenizer = tokenizerFactory()
+        # normalize as ints
+        positive_examples_series = self.positive_dataset_reader.standardized_df[self.positive_dataset_reader.text_colname]
+        positive_examples_series = positive_examples_series.apply(
+            lambda line: [self.vocab_dict.lookup(x) for x in self.positive_dataset_reader.seq_extractor.tokenize(line)]
+        )
+        positive_examples = positive_examples_series.tolist()
 
-    def load_train_data(self, positive_file, negative_file):
-        # Load data
-        positive_examples = []
-        negative_examples = []
+        negative_examples_series = self.negative_dataset_reader.standardized_df[self.negative_dataset_reader.text_colname]
+        negative_examples_series = negative_examples_series.apply(
+            lambda line: [self.vocab_dict.lookup(x) for x in self.negative_dataset_reader.seq_extractor.tokenize(line)]
+        )
+        negative_examples = negative_examples_series.tolist()
 
-        with open(positive_file, 'r') as fin:
-            for line in fin:
-                line = line.strip().split("\t")[0]
-                line = line.split() if self.vocab_dictionary is None else self.tokenizer(line)
-                parse_line = [int(x) if self.vocab_dictionary is None else self.vocab_dictionary.lookup(x)
-                              for x in line]
+        # make sure no parsing inconsistencies -- gotta have correct length
+        positive_examples = [token_ints_list for token_ints_list in positive_examples
+                             if len(token_ints_list) == self.positive_dataset_reader.max_seq_length]
 
-                if len(parse_line) == self.max_seq_length:
-                    positive_examples.append(parse_line)
-                elif (self.vocab_dictionary is not None) and len(parse_line) < self.max_seq_length and len(parse_line) >= self.min_seq_length:
-                    pad_token = self.vocab_dictionary.pad_token
-                    pad_int = self.vocab_dictionary.lookup(pad_token)
-                    pad_len = self.max_seq_length - len(parse_line)
-                    parse_line.extend([pad_int for _ in range(pad_len)])
-                    positive_examples.append(parse_line)
+        negative_examples = [token_ints_list for token_ints_list in negative_examples
+                             if len(token_ints_list) == self.negative_dataset_reader.max_seq_length]
 
-        with open(negative_file, 'r') as fin:
-            for line in fin:
-                line = line.strip().split("\t")[0]
-                line = line.split() if self.vocab_dictionary is None else self.tokenizer(line)
-                parse_line = [int(x) if self.vocab_dictionary is None else self.vocab_dictionary.lookup(x)
-                              for x in line]
-
-                if len(parse_line) == self.max_seq_length:
-                    negative_examples.append(parse_line)
-                elif (self.vocab_dictionary is not None) and len(parse_line) < self.max_seq_length:
-                    pad_token = self.vocab_dictionary.pad_token
-                    pad_int = self.vocab_dictionary.lookup(pad_token)
-                    pad_len = self.max_seq_length - len(parse_line)
-                    parse_line.extend([pad_int for _ in range(pad_len)])
-                    negative_examples.append(parse_line)
-
-        # we don't want to permit class imbalances per batch.
-
+        # Also, we don't want to permit class imbalances per batch.
         L = min(len(positive_examples), len(negative_examples))
         assert L > 0
 

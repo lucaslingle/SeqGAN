@@ -7,21 +7,23 @@ class Discriminator(object):
     Uses an embedding layer, followed by a convolutional, max-pooling and softmax layer.
     """
 
-    def __init__(self, sequence_length, vocab_size, embedding_size, filter_sizes, num_filters, dropout_keep_prob):
+    def __init__(self, sequence_length, vocab_size, embedding_size, filter_sizes, num_filters,
+                 dropout_keep_prob, learning_rate=1e-4, pad_token=None):
 
         # Placeholders for input, output and dropout
         self.input_x = tf.placeholder(tf.int32, [None, sequence_length], name="input_x")   # token ints
         self.input_y = tf.placeholder(tf.float32, [None, 2], name="input_y")               # one-hot encoded class
         self.training_mode = tf.placeholder(tf.bool, name="training_mode")
         self.dropout_keep_prob = dropout_keep_prob
+        self.learning_rate = learning_rate
+
+        self.pad_token_id = pad_token
 
         with tf.variable_scope('discriminator'):
 
             # Embedding layer
             with tf.device('/cpu:0'), tf.name_scope("embedding"):
-                self.W = tf.Variable(
-                    tf.random_uniform([vocab_size, embedding_size], -1.0, 1.0),
-                    name="W")
+                self.W = tf.Variable(tf.random_uniform([vocab_size, embedding_size], -1.0, 1.0), name="W")
                 self.embedded_chars = tf.nn.embedding_lookup(self.W, self.input_x)
 
             # Create a convolution + maxpool layer for each filter size
@@ -40,10 +42,9 @@ class Discriminator(object):
                         name="conv-filters-of-size-%s" % filter_size
                     )
                     # Maxpooling over the outputs
-                    pool_size = sequence_length - filter_size + 1
                     pooled = tf.layers.max_pooling1d(
                         inputs=conv,
-                        pool_size=pool_size,
+                        pool_size=sequence_length-filter_size+1,
                         strides=1,
                         padding='valid',
                         data_format='channels_last',
@@ -84,6 +85,6 @@ class Discriminator(object):
                 ))
 
         self.params = [param for param in tf.trainable_variables() if 'discriminator' in param.name]
-        d_optimizer = tf.train.AdamOptimizer(1e-4)
+        d_optimizer = tf.train.AdamOptimizer(self.learning_rate)
         grads_and_vars = d_optimizer.compute_gradients(self.loss, self.params, aggregation_method=2)
         self.train_op = d_optimizer.apply_gradients(grads_and_vars)

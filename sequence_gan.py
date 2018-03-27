@@ -1,14 +1,20 @@
 import os
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 import random
 import datetime
 from collections import OrderedDict
-from dataloader import VocabDictionary, Gen_Dataloader, Dis_Dataloader
+from dataloader import Gen_Dataloader, Dis_Dataloader
 from generator import Generator
 from discriminator import Discriminator
 from rollout import ROLLOUT
 from target_lstm import TARGET_LSTM
+
+from utils.special_token_provisioner import SpecialTokenProvisioner
+from utils.sequence_extractor import SequenceExtractor
+from utils.dataset_reader import DatasetReader
+from utils.vocab_dictionary import VocabDictionary
 
 flags = tf.app.flags
 
@@ -21,8 +27,10 @@ flags.DEFINE_boolean("show_every_epoch", False, "show_every_epoch: print every e
 ### Generator
 flags.DEFINE_integer("g_emb_dim", 32, "g_emb_dim: embedding size for generator")
 flags.DEFINE_integer("g_hidden_dim", 32, "g_hidden_dim: hidden state size for generator lstm")
+flags.DEFINE_float("g_learning_rate", 0.01, "g_learning_rate: learning rate for generator")
 ### Discriminator
 flags.DEFINE_integer("d_emb_dim", 64, "d_emb_dim: embedding size for discriminator")
+flags.DEFINE_float("d_learning_rate", 1e-4, "d_learning_rate: learning rate for discriminator")
 
 ### Both
 flags.DEFINE_integer("batch_size", 64, "batch_size: batch size")
@@ -33,7 +41,7 @@ flags.DEFINE_integer("adversarial_epochs", 200, "number of adversarial training 
 flags.DEFINE_integer("g_steps", 1, "steps to train the generator in a given training cycle")
 flags.DEFINE_integer("d_steps", 5, "number of times to generate data to train the discriminator in a given training cycle")
 flags.DEFINE_integer("k_steps", 3, "epochs to train the discriminator on given set of generated data in a given training cycle")
-flags.DEFINE_integer("rollout_branch_factor", 16, "rollout_branch_factor: number of times to run a rollout for each prefix")
+flags.DEFINE_integer("rollout_sample_size", 16, "rollout_sample_size: number of times to run rollouts for any given prefix")
 
 # Rollout network
 flags.DEFINE_boolean("update_rollout_every_gstep", True, "update_rollout_every_gstep: update rollout network after every generator training step in a given training cycle")
@@ -46,6 +54,12 @@ flags.DEFINE_string("generator_data_fp", "data", "generator_data_fp: filepath fo
 flags.DEFINE_string("eval_data_fp", "data", "eval_data_fp: filepath for a file the generator can write to (Note: flag ignored if using oracle)")
 flags.DEFINE_boolean("use_character_level_model", False, "use_character_level_model: if True, model characters, not words (Note: flag ignored if using oracle)")
 flags.DEFINE_boolean("use_onehot_embeddings", False, "use_onehot_embeddings: can only be used with use_character_level_model. Skips token embeddings.")
+
+flags.DEFINE_string("train_data_colnames_commasep", "comment,label", "train_data_colnames_commasep: comma-separated list of column names in order")
+flags.DEFINE_string("train_data_text_colname", "comment", "train_data_text_colname: column name containing the text we want to train on")
+flags.DEFINE_string("train_data_sepchar", "\t", "train_data_sepchar: separator character for train dataset (if multiple columns)")
+
+
 FLAGS = flags.FLAGS
 
 #########################################################################################
@@ -88,44 +102,30 @@ positive_file = 'save/real_data.txt' if FLAGS.use_oracle_data else FLAGS.train_d
 negative_file = 'save/generator_sample.txt' if FLAGS.use_oracle_data else FLAGS.generator_data_fp
 eval_file = 'save/eval_file.txt' if FLAGS.use_oracle_data else FLAGS.eval_data_fp
 generated_num = 10000
-rollout_branch_factor = FLAGS.rollout_branch_factor
+
+rollout_sample_size = FLAGS.rollout_sample_size
+conditional_expectation_samples = 1 # the current implementation doesnt actually support > 1
 
 
 os.makedirs('save', exist_ok=True)
 
 
 def generate_samples(sess, trainable_model, batch_size, generated_num, output_file,
-                     vocab_dict=None, char_level_bool=False):
-
+                     vocab_dict, seq_extractor):
     # Generate Samples
     generated_samples = []
     for _ in range(int(generated_num / batch_size)):
         sample_batch = trainable_model.generate(sess)
         generated_samples.extend(sample_batch)
 
-    def _oracle_get_char_for_printing(token_int):
-        return str(token_int)
-
-    def _natural_get_char_for_printing(token_int):
-        token = vocab_dict.reverse_lookup(token_int)
-        return token
-
-    def _printFormatterFactory():
-        return _oracle_get_char_for_printing if vocab_dict is None else _natural_get_char_for_printing
-
-    get_char_for_printing = _printFormatterFactory()
-    sep_char = '' if char_level_bool else ' '
-
     with open(output_file, 'w+') as fout:
         for sample in generated_samples:
-            token_string_list = []
 
-            for token_int in sample:
-                token = get_char_for_printing(token_int)
-                token_string_list.append(token)
-
-            buffer = sep_char.join(token_string_list) + '\n'
-            fout.write(buffer)
+            tokens = [vocab_dict.reverse_lookup(token_id) for token_id in sample]
+            buffer = seq_extractor.join(tokens, drop_special_tokens=False)
+            fout.write(buffer + '\n')
+    fout.close()
+    return
 
 def compute_oracle_loss(sess, target_lstm, data_loader):
     # target_loss means the oracle negative log-likelihood tested with the oracle model "target_lstm"
@@ -284,58 +284,90 @@ def main():
               "we must are setting FLAGS.use_character_level_model to False.")
         FLAGS.use_character_level_model = False
 
-    vocab_dict = None
-    vocab_size = oracle_vocab_size
+    if FLAGS.use_oracle_data:
+        tokenizer_level = 'oracletokens'
+    else:
+        if FLAGS.use_character_level_model:
+            tokenizer_level = 'character'
+        else:
+            #tokenizer_level = 'word'
+            tokenizer_level = 'socialmediatokens'
+
+    special_tokens_provisioner = SpecialTokenProvisioner(tokenizer_level=tokenizer_level)
+    special_tokens_specification = special_tokens_provisioner.special_tokens_specification
+
+    seq_extractor = SequenceExtractor(tokenizer_level=tokenizer_level,
+                                      special_tokens_spec=special_tokens_specification
+    )
+
+
+    if FLAGS.use_natural_data:
+        real_dataset_reader = DatasetReader(fp=positive_file,
+                                            file_sepchar=FLAGS.train_data_sepchar,
+                                            file_columns=FLAGS.train_data_colnames_commasep.split(","),
+                                            text_colname=FLAGS.train_data_text_colname,
+                                            sequence_extractor=seq_extractor,
+                                            min_seq_length=2,
+                                            max_seq_length=SEQ_LENGTH,
+                                            vocab_dict=None)
+        real_dataset_reader.load()
+
+        vocab_dict = real_dataset_reader.vocab_dict
+
+        fake_dataset_reader = DatasetReader(fp=negative_file,
+                                            file_sepchar="\t",
+                                            file_columns=['comment'],
+                                            text_colname='comment',
+                                            sequence_extractor=seq_extractor,
+                                            min_seq_length=2,
+                                            max_seq_length=SEQ_LENGTH,
+                                            vocab_dict=vocab_dict)
+
+        vocab_size = vocab_dict.get_length()
+    else:
+        vocab_dict = VocabDictionary(seq_extractor=seq_extractor,
+                                     max_seq_length=SEQ_LENGTH,
+                                     drop_freq_thresh=0)
+        vocab_dict.init_oracle(oracle_vocab_size)
+        vocab_size = vocab_dict.get_length()
+
+        real_dataset_reader = DatasetReader(fp=positive_file,
+                                            file_sepchar="\t",
+                                            file_columns=['comment'],
+                                            text_colname='comment',
+                                            sequence_extractor=seq_extractor,
+                                            min_seq_length=2,
+                                            max_seq_length=SEQ_LENGTH,
+                                            vocab_dict=vocab_dict)
+
+        fake_dataset_reader = DatasetReader(fp=negative_file,
+                                            file_sepchar="\t",
+                                            file_columns=['comment'],
+                                            text_colname='comment',
+                                            sequence_extractor=seq_extractor,
+                                            min_seq_length=2,
+                                            max_seq_length=SEQ_LENGTH,
+                                            vocab_dict=vocab_dict)
+
+    print(vocab_dict.vocab_dict)
+    print(vocab_dict.int_to_token_dict)
+
+    ######## Gen, Dis, and Oracle Models ###########
     EMB_DIM = WORD_EMB_DIM
     dis_embedding_dim = dis_word_embedding_dim
 
-    if FLAGS.use_natural_data:
-        vocab_dict = VocabDictionary(
-            data_fp=positive_file,
-            max_seq_length=SEQ_LENGTH,
-            character_level_model_bool=FLAGS.use_character_level_model,
-            drop_freq_thresh=10
-        )
-        print(vocab_dict.vocab_dict)
-        print(vocab_dict.int_to_token_dict)
-
-        vocab_size = vocab_dict.get_length()
-
-        if FLAGS.use_onehot_embeddings:
-            # if we're using one-hot encodings,
-            # the embedding dim must be the same as the number of possible tokens:
-            EMB_DIM = vocab_size
-
-    # Data loaders
-    gen_data_loader = Gen_Dataloader(
-        BATCH_SIZE,
-        vocab_dictionary=vocab_dict,
-        max_seq_length=SEQ_LENGTH,
-        character_level_model_bool=FLAGS.use_character_level_model
-    )
-
-    likelihood_data_loader = Gen_Dataloader(
-        BATCH_SIZE,
-        vocab_dictionary=vocab_dict,
-        max_seq_length=SEQ_LENGTH,
-        character_level_model_bool=FLAGS.use_character_level_model
-    )
-
-    dis_data_loader = Dis_Dataloader(
-        BATCH_SIZE,
-        vocab_dictionary=vocab_dict,
-        max_seq_length=SEQ_LENGTH,
-        character_level_model_bool=FLAGS.use_character_level_model
-    )
-
-    # Gen, Dis, and Oracle Models
+    if FLAGS.use_onehot_embeddings:
+        # if we're using one-hot encodings,
+        # the embedding dim must be the same as the number of possible tokens:
+        EMB_DIM = vocab_size
 
     generator = Generator(
         vocab_size, BATCH_SIZE, EMB_DIM, HIDDEN_DIM, SEQ_LENGTH,
         go_token=START_TOKEN,
         eos_token=EOS_TOKEN,
         pad_token=(PAD_TOKEN if vocab_dict is not None else None),
-        use_onehot_embeddings=FLAGS.use_onehot_embeddings
+        use_onehot_embeddings=FLAGS.use_onehot_embeddings,
+        learning_rate=FLAGS.g_learning_rate
     )
 
     discriminator = Discriminator(
@@ -344,7 +376,9 @@ def main():
         embedding_size=dis_embedding_dim,
         filter_sizes=dis_filter_sizes,
         num_filters=dis_num_filters,
-        dropout_keep_prob=dis_dropout_keep_prob
+        dropout_keep_prob=dis_dropout_keep_prob,
+        learning_rate=FLAGS.d_learning_rate,
+        pad_token=(PAD_TOKEN if vocab_dict is not None else None)
     )
 
     target_params = []
@@ -354,19 +388,59 @@ def main():
         target_params
     )
 
+    ##################### Session Config #######################
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     sess = tf.Session(config=config)
     sess.run(tf.global_variables_initializer())
 
-    # First, use the oracle model to provide the positive examples, which are sampled from the oracle data distribution
+    ##################### Prepare the datasets #######################
+
+    # Load the "real" data. If we're using an oracle, let the oracle synthesize it first.
+    # Then load it via real_dataset_reader
     if FLAGS.use_oracle_data:
         generate_samples(sess, target_lstm, BATCH_SIZE, generated_num, positive_file,
-                         vocab_dict=vocab_dict,
-                         char_level_bool=FLAGS.use_character_level_model
+                         vocab_dict=vocab_dict, seq_extractor=seq_extractor
         )
 
-    gen_data_loader.create_batches(positive_file)
+    real_dataset_reader.load()
+
+    # Load the "fake" data. This will look like nonsense with an untrained model.
+    generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
+                     vocab_dict=vocab_dict, seq_extractor=seq_extractor
+    )
+    fake_dataset_reader.load()
+
+    ##################### Instantiate the Dataloaders from the DataReaders and the VocabDict #######################
+
+    # Data loaders -
+    #
+    # these the data extracted via the DataReaders
+    # normalize the tokens (i.e., replace them with ints)
+    # and create batches
+
+    gen_data_loader = Gen_Dataloader(
+        vocab_dict=vocab_dict,
+        dataset_reader=real_dataset_reader,
+        batch_size=BATCH_SIZE
+    )
+
+    likelihood_data_loader = Gen_Dataloader(
+        vocab_dict=vocab_dict,
+        dataset_reader=fake_dataset_reader,
+        batch_size=BATCH_SIZE
+    )
+
+    dis_data_loader = Dis_Dataloader(
+        vocab_dict=vocab_dict,
+        positive_dataset_reader=real_dataset_reader,
+        negative_dataset_reader=fake_dataset_reader,
+        batch_size=BATCH_SIZE
+    )
+
+    gen_data_loader.create_batches()
+    likelihood_data_loader.create_batches()
+    dis_data_loader.load_train_data()
 
     log = open('save/experiment-log.txt', 'w+')
 
@@ -379,12 +453,11 @@ def main():
         if epoch % 5 == 0 or FLAGS.show_every_epoch:
 
             if (FLAGS.use_natural_data == False):
-                generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                                 vocab_dict=vocab_dict,
-                                 char_level_bool=FLAGS.use_character_level_model
+                generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
+                                 vocab_dict=vocab_dict, seq_extractor=seq_extractor
                 )
 
-                likelihood_data_loader.create_batches(eval_file)
+                likelihood_data_loader.create_batches()
 
                 oracle_nll_loss = compute_oracle_loss(sess, target_lstm, likelihood_data_loader)
 
@@ -395,14 +468,13 @@ def main():
                          'oracle_nll:\t' + str(oracle_nll_loss) + '\n'
                 log.write(buffer)
             else:
-                generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                                 vocab_dict=vocab_dict,
-                                 char_level_bool=FLAGS.use_character_level_model
+                generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
+                                 vocab_dict=vocab_dict, seq_extractor=seq_extractor
                 )
 
-                dis_data_loader.load_train_data(positive_file, eval_file)
-                likelihood_data_loader.create_batches(eval_file)
-                gen_data_loader.create_batches(positive_file)
+                gen_data_loader.create_batches()
+                likelihood_data_loader.create_batches()
+                dis_data_loader.load_train_data()
 
                 logging_prefix_string = 'generator pre-train epoch {}\n\t token_cross_entropy_loss: {}'.format(
                     epoch, pretrain_cross_entropy_loss
@@ -423,10 +495,10 @@ def main():
     print('Starting pre-training for the discriminator...')
     for epoch in range(dis_pre_epoch_num):
         generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
-                         vocab_dict=vocab_dict,
-                         char_level_bool=FLAGS.use_character_level_model
+                         vocab_dict=vocab_dict, seq_extractor=seq_extractor
         )
-        dis_data_loader.load_train_data(positive_file, negative_file)
+
+        dis_data_loader.load_train_data()
 
         for _ in range(FLAGS.k_steps):
             dis_data_loader.reset_pointer()
@@ -440,13 +512,9 @@ def main():
                 _ = sess.run(discriminator.train_op, feed)
 
         if epoch % 5 == 0 or FLAGS.show_every_epoch:
-            generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                             vocab_dict=vocab_dict,
-                             char_level_bool=FLAGS.use_character_level_model
-            )
-            dis_data_loader.load_train_data(positive_file, eval_file)
-            likelihood_data_loader.create_batches(eval_file)
-            gen_data_loader.create_batches(positive_file)
+            gen_data_loader.create_batches()
+            likelihood_data_loader.create_batches()
+            dis_data_loader.load_train_data()
 
             logging_prefix_string = 'discriminator pre-train epoch {}... '.format(epoch)
 
@@ -458,7 +526,7 @@ def main():
                 logging_prefix_string=logging_prefix_string
             )
 
-    rollout = ROLLOUT(generator, 0.0)
+    rollout = ROLLOUT(generator, 0.80)
 
     print('#########################################################################')
     print('Start Adversarial Training...')
@@ -468,7 +536,7 @@ def main():
         # Train the generator for one step
         for it in range(FLAGS.g_steps):
             samples = generator.generate(sess)
-            rewards = rollout.get_reward(sess, samples, rollout_branch_factor, discriminator)
+            rewards = rollout.get_reward(sess, samples, rollout_sample_size, discriminator)
             feed = {generator.x: samples, generator.rewards: rewards}
             _ = sess.run(generator.g_updates, feed_dict=feed)
 
@@ -480,13 +548,14 @@ def main():
         if (total_batch % 5 == 0) or (total_batch == TOTAL_BATCH - 1) or FLAGS.show_every_epoch:
 
             if (FLAGS.use_natural_data == False):
-
-                generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                                 vocab_dict=vocab_dict,
-                                 char_level_bool=FLAGS.use_character_level_model
+                generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
+                                 vocab_dict=vocab_dict, seq_extractor=seq_extractor
                 )
 
+                likelihood_data_loader.create_batches()
+
                 oracle_nll_loss = compute_oracle_loss(sess, target_lstm, likelihood_data_loader)
+
                 print('epoch: {}\t generator training... oracle_nll: {}\t datetime: {}'.format(
                     total_batch, oracle_nll_loss, datetime.datetime.now()
                 ))
@@ -495,14 +564,13 @@ def main():
                          'oracle_nll:\t' + str(oracle_nll_loss) + '\n'
                 log.write(buffer)
             else:
-                generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                                 vocab_dict=vocab_dict,
-                                 char_level_bool=FLAGS.use_character_level_model
+                generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
+                                 vocab_dict=vocab_dict, seq_extractor=seq_extractor
                 )
 
-                dis_data_loader.load_train_data(positive_file, eval_file)
-                likelihood_data_loader.create_batches(eval_file)
-                gen_data_loader.create_batches(positive_file)
+                gen_data_loader.create_batches()
+                likelihood_data_loader.create_batches()
+                dis_data_loader.load_train_data()
 
                 logging_prefix_string = 'adversarial epoch: {}\n\t generator training... '.format(total_batch)
 
@@ -527,10 +595,10 @@ def main():
         # Train the discriminator
         for _ in range(FLAGS.d_steps):
             generate_samples(sess, generator, BATCH_SIZE, generated_num, negative_file,
-                             vocab_dict=vocab_dict,
-                             char_level_bool=FLAGS.use_character_level_model
+                             vocab_dict=vocab_dict, seq_extractor=seq_extractor
             )
-            dis_data_loader.load_train_data(positive_file, negative_file)
+
+            dis_data_loader.load_train_data()
 
             for _ in range(FLAGS.k_steps):
                 dis_data_loader.reset_pointer()
@@ -545,13 +613,10 @@ def main():
 
         # Test
         if (total_batch % 5 == 0) or (total_batch == TOTAL_BATCH - 1) or FLAGS.show_every_epoch:
-            generate_samples(sess, generator, BATCH_SIZE, generated_num, eval_file,
-                             vocab_dict=vocab_dict,
-                             char_level_bool=FLAGS.use_character_level_model
-            )
-            dis_data_loader.load_train_data(positive_file, eval_file)
-            likelihood_data_loader.create_batches(eval_file)
-            gen_data_loader.create_batches(positive_file)
+
+            gen_data_loader.create_batches()
+            likelihood_data_loader.create_batches()
+            dis_data_loader.load_train_data()
 
             logging_prefix_string = 'adversarial epoch: {}\n\t discriminator training... '.format(total_batch)
 

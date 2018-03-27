@@ -19,7 +19,8 @@ def log_prob_from_logits(x):
 class Generator(object):
     def __init__(self, num_emb, batch_size, emb_dim, hidden_dim,
                  sequence_length, go_token, eos_token=None, pad_token=None, use_onehot_embeddings=False,
-                 learning_rate=0.01, reward_gamma=0.95):
+                 learning_rate=0.01):
+
         self.num_emb = num_emb
         self.batch_size = batch_size
         self.emb_dim = emb_dim
@@ -34,32 +35,16 @@ class Generator(object):
         self.pad_token_id = pad_token
         self.use_onehot_embeddings = use_onehot_embeddings
 
-        self.learning_rate = tf.Variable(float(learning_rate), trainable=False)
-        self.reward_gamma = reward_gamma
+        self.learning_rate = learning_rate
         self.g_params = []
-        self.d_params = []
         self.temperature = 1.0
         self.grad_clip = 5.0
 
         self.expected_reward = tf.Variable(tf.zeros([self.sequence_length]))
 
         with tf.variable_scope('generator'):
-
-            self.g_embeddings_naive = tf.eye(self.num_emb)
-
-            if self.use_onehot_embeddings == False:
-                self.g_embeddings_naive = tf.Variable(self.init_matrix([self.num_emb, self.emb_dim]))
-                self.g_params.append(self.g_embeddings_naive)
-
-            self.g_embeddings = self.g_embeddings_naive
-            if pad_token is not None:
-                self.g_embeddings = tf.concat([
-                        self.g_embeddings_naive[0:self.pad_token_id, :],
-                        tf.zeros(dtype=tf.float32, shape=[1, self.emb_dim]),
-                        self.g_embeddings_naive[(self.pad_token_id+1):, :]
-                    ],
-                    axis=0
-                )
+            self.g_embeddings = tf.Variable(self.init_matrix([self.num_emb, self.emb_dim]))
+            self.g_params.append(self.g_embeddings)
             self.g_recurrent_unit = self.create_recurrent_unit(self.g_params)  # maps h_tm1 to h_t for generator
             self.g_output_unit = self.create_output_unit(self.g_params)  # maps h_t to o_t (output token logits)
 
@@ -137,53 +122,66 @@ class Generator(object):
         #######################################################################################################
         #  Unsupervised Training
         #######################################################################################################
-        #
-        # we ran the recurrence to get g_logits for each step in the generated samples.
-        #
-        # now we can use
-        # sparse_softmax_cross_entropy_with_logits to give us the negative log prob of each token from the generated samples
-        #
-        # i.e.,
-        #     for a given integer y_t representing some token ID generated at time t,
-        #     sparse_softmax_cross_entropy_with_logits is computes
-        #
-        # -log(p(y_t)) for token y_t.
-        #
-        # and it doesn't sum over anything by default--so it just gives us a tensor of -log(p(y_t))
-        # of shape [batch_size, sequence_length]
-        #
-        # We use the func because of numerical stability issues:
-        #
-        # Note, log(softmax(logits)) == log(exp(logit_for_class_i)) - log(sum_i(exp(logit_for_class_i)))
-        #                            == logit_for_class_i - log(sum_i(exp(logit_for_class_i)))
-        #
-        # so we can't just use logit_for_class_i as our log prob,
-        # because it will be larger than the actual log prob
-        # by log(sum_i(exp(logit_for_class_i)))
-        #
-        # and in particular, log sum exp has numerical stability issues
-        #
-        # The reason to use sparse_softmax_cross_entropy_with_logits is
-        # that it handles numerical stability issues.
-        #
-        self.negative_log_prob_for_generated_tokens = tf.nn.sparse_softmax_cross_entropy_with_logits(
+
+        self.negative_log_prob_for_generated_tokens_by_episode = tf.nn.sparse_softmax_cross_entropy_with_logits(
             logits=self.g_logits,
             labels=self.x
         )
-        self.log_prob_for_generated_tokens = -1 * self.negative_log_prob_for_generated_tokens
+        self.log_prob_for_generated_tokens_by_episode = -1 * self.negative_log_prob_for_generated_tokens_by_episode
 
-        # Tensorflow will compute the gradient of this formula w.r.t. the generator model params,
-        # and in doing so, it will give us a gradient estimate matching those given by the REINFORCE formula.
-        self.g_proxy_objective_for_reinforce = tf.reduce_sum(
-            self.log_prob_for_generated_tokens * self.rewards,
+        # The REINFORCE formula given by equation 7 in the paper applies to one episode with steps t = 1,..., T.
+        # In particular, the formula is a sum over time of a conditional expectation.
+        #
+        # The paper remarks that each conditional expectation can be replaced "with sampling methods".
+        #
+        # It was initially unclear to me whether these sampling methods were
+        # related to the rollouts whose rewards were being computed.
+        #
+        # Indeed, if one runs rollouts for a prefix sequence y_{1,...,t-1}
+        # and then computes the average reward by grouped by the first symbol y_t from each of those rollouts,
+        # we could use those separate monte carlo estimates as part of a multi-term approximation of each conditional expectation.
+        #
+        # However, in Lantao Yu's original implementation, there are 16 rollouts per prefix, there is no branching in the prefixes,
+        # and the rewards from all 16 rollouts is averaged.
+        #
+        # By averaging the rewards in this manner,
+        # he is making it clear that there is only one monte carlo estimate for each generated prefix sequence.
+        #
+        # And correspondingly, there is only one grad[log(p(y_t|y_{1,...,t-1}))] term at timestep t.
+        #
+        # So in conclusion, the current implementation by Lantao Yu does not support rollouts that branch, samples that branch, etc.
+        #
+        # Hence, the "sampling methods" from the paper are, in Lantao Yu's current implementation,
+        # based on only one conditional sample y_t, conditioned on y_{1,...,t-1}.
+        #
+        # (Although, yes, the monte carlo estimated reward is based on 16 samples).
+        #
+        # We will follow the same approach.
+        #
+        self.g_proxy_objective_for_reinforce_by_episode = tf.reduce_sum(
+            self.log_prob_for_generated_tokens_by_episode * self.rewards,  # [batch_size, seq_length] x [batch_size, seq_length]
+            axis=1
+        ) # [batch_size]
+
+        # When we have a batch size > 1, this is akin to having have multiple episodes generated by the same policy.
+        #
+        # In order to obtain the gradient estimate for the policy,
+        # I believe assume we are supposed to *average*, not *sum*.
+        #
+        # NOTE: This is different than Lantao Yu's implementation.
+        #
+        self.g_proxy_objective_for_reinforce = tf.reduce_mean(
+            self.g_proxy_objective_for_reinforce_by_episode,
+            axis=0
         )
 
         # In tensorflow, the optimizer takes steps in the *negative* direction of the gradient:
         #
-        #    params := params - alpha * grad(objective)
+        #    params := params - learning_rate * grad(objective)
         #
-        # Thus, we must wrap objective in a minus sign
-        # in order to get gradient steps in the direction that maximizes the reward.
+        # Thus, we must add a minus sign to the original objective, in order to get a new objective
+        # such that taking steps in the negative direction of the new objective
+        # is equivalent to taking positive steps in the direction of the gradient of the original objective.
         #
         self.g_loss = -1 * self.g_proxy_objective_for_reinforce
 
